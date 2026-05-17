@@ -20,10 +20,10 @@ set(MBEDTLS_SOURCES
 )
 
 # Create a separate static library for mbedTLS
-add_library(mbedtls_custom STATIC ${MBEDTLS_SOURCES})
+add_library(mbedtls STATIC ${MBEDTLS_SOURCES})
 
 # Public include directories (propagated to targets that link to this)
-target_include_directories(mbedtls_custom PUBLIC
+target_include_directories(mbedtls PUBLIC
     ${MBEDTLS_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/Target
     
@@ -34,12 +34,12 @@ target_include_directories(mbedtls_custom PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../Drivers/CMSIS/Include
 )
 
-target_include_directories(mbedtls_custom PRIVATE
+target_include_directories(mbedtls PRIVATE
     ${MBEDTLS_DIR}/library
 )
 
 # Public definitions
-target_compile_definitions(mbedtls_custom PUBLIC
+target_compile_definitions(mbedtls PUBLIC
     STM32H573xx
     MBEDTLS_CONFIG_FILE="${CMAKE_CURRENT_SOURCE_DIR}/Target/mbedtls_config.h"
     MBEDTLS_PLATFORM_MS_TIME_ALT
@@ -47,7 +47,7 @@ target_compile_definitions(mbedtls_custom PUBLIC
 )
 
 # Set optimization to -O2 for mbedTLS to fix "not enough registers" error in bignum_core.c
-target_compile_options(mbedtls_custom PRIVATE "-O2")
+target_compile_options(mbedtls PRIVATE "-O2")
 
 # Link the custom mbedTLS library to the main project (using plain signature to match CubeMX)
-target_link_libraries(${CMAKE_PROJECT_NAME} mbedtls_custom)
+target_link_libraries(${CMAKE_PROJECT_NAME} mbedtls)

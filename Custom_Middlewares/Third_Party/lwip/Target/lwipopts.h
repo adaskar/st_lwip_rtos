@@ -253,5 +253,7 @@ void sys_unlock_tcpip_core(void);
 #define DEFAULT_ACCEPTMBOX_SIZE         6
 #define DEFAULT_THREAD_STACKSIZE        1024
 #define TCPIP_THREAD_PRIO               osPriorityHigh
+
+
 #endif /* __LWIPOPTS_H__ */
 
