@@ -1,0 +1,6 @@
+[submodule "Custom_Middlewares/Third_Party/lwip/stm32-mw-lwip"]
+	path = Custom_Middlewares/Third_Party/lwip/stm32-mw-lwip
+	url = https://github.com/STMicroelectronics/stm32-mw-lwip
+[submodule "Custom_Middlewares/Components/lan8742"]
+	path = Custom_Middlewares/Components/lan8742
+	url = https://github.com/STMicroelectronics/stm32-lan8742
