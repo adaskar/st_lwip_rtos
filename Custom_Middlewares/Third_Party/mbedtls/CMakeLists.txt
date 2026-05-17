@@ -17,6 +17,8 @@ set(MBEDTLS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/low_level_rng.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/rsa_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/sha256_alt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Target/ecdsa_alt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Target/ecp_alt.c
 )
 
 # Create a separate static library for mbedTLS
