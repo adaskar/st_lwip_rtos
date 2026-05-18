@@ -19,6 +19,7 @@ set(MBEDTLS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/sha256_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/ecdsa_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/ecp_alt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Target/ecdh_alt.c
 )
 
 # Create a separate static library for mbedTLS
