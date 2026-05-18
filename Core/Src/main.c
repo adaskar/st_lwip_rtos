@@ -24,6 +24,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "mbedtls.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -117,6 +119,24 @@ int main(void)
   MX_RNG_Init();
   MX_PKA_Init();
   /* USER CODE BEGIN 2 */
+  
+  int v = 1; /* v=1 for verbose mode */
+  if( mbedtls_sha256_self_test(v)  == 0 )
+   {
+      mbedtls_printf( "  Executed SHA256 test suites\n\n" );
+   }
+  if( mbedtls_aes_self_test(v)  == 0 )
+   {
+      mbedtls_printf( "  Executed AES test suites\n\n" );
+   }
+  if( mbedtls_gcm_self_test(v)  == 0 )
+   {
+      mbedtls_printf( "  Executed AES GCM test suites\n\n" );
+   }
+  if( mbedtls_rsa_self_test(v)  == 0 )
+   {
+      mbedtls_printf( "  Executed RSA test suites\n\n" );
+   }
 
   /* USER CODE END 2 */
 
