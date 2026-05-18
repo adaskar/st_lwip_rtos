@@ -471,11 +471,11 @@
 /* Required for all the functions in this section */
 #define MBEDTLS_ECP_INTERNAL_ALT
 /* Support for Weierstrass curves with Jacobi representation */
-//#define MBEDTLS_ECP_RANDOMIZE_JAC_ALT
-//#define MBEDTLS_ECP_ADD_MIXED_ALT
-//#define MBEDTLS_ECP_DOUBLE_JAC_ALT
-//#define MBEDTLS_ECP_NORMALIZE_JAC_MANY_ALT
-//#define MBEDTLS_ECP_NORMALIZE_JAC_ALT
+//#define MBEDTLS_ECP_RANDOMIZE_JAC_ALT         /* No PKA primitive — software fallback */
+#define MBEDTLS_ECP_ADD_MIXED_ALT               /* HAL_PKA_ECCCompleteAddition */
+//#define MBEDTLS_ECP_DOUBLE_JAC_ALT            /* No PKA primitive — software fallback */
+#define MBEDTLS_ECP_NORMALIZE_JAC_MANY_ALT      /* HAL_PKA_ECCProjective2Affine (loop) */
+#define MBEDTLS_ECP_NORMALIZE_JAC_ALT           /* HAL_PKA_ECCProjective2Affine */
 /* Support for curves with Montgomery arithmetic */
 //#define MBEDTLS_ECP_DOUBLE_ADD_MXZ_ALT
 //#define MBEDTLS_ECP_RANDOMIZE_MXZ_ALT
