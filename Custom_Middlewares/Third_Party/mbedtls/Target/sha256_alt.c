@@ -97,7 +97,7 @@ void mbedtls_sha256_clone(mbedtls_sha256_context *dst,
     *dst = *src;
 }
 
-int mbedtls_sha256_starts_ret(mbedtls_sha256_context *ctx, int is224)
+int mbedtls_sha256_starts( mbedtls_sha256_context *ctx, int is224 )
 {
     SHA256_VALIDATE_RET( ctx != NULL );
     SHA256_VALIDATE_RET( is224 == 0 || is224 == 1 );
@@ -105,23 +105,23 @@ int mbedtls_sha256_starts_ret(mbedtls_sha256_context *ctx, int is224)
     ctx->hhash.Instance = HASH;
 
     /* HASH Configuration */
-    if (HAL_HASH_DeInit(&ctx->hhash) != HAL_OK)
+    if( HAL_HASH_DeInit( &ctx->hhash ) != HAL_OK )
     {
         return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
     }
 
     ctx->hhash.Init.DataType = HASH_BYTE_SWAP;
 
-    if (is224 == 1)
+    if( is224 == 1 )
     {
-      ctx->hhash.Init.Algorithm = HASH_ALGOSELECTION_SHA224;
-
-    } else {
-      ctx->hhash.Init.Algorithm = HASH_ALGOSELECTION_SHA256;
-
+        ctx->hhash.Init.Algorithm = HASH_ALGOSELECTION_SHA224;
+    }
+    else
+    {
+        ctx->hhash.Init.Algorithm = HASH_ALGOSELECTION_SHA256;
     }
 
-    if (HAL_HASH_Init(&ctx->hhash) != HAL_OK)
+    if( HAL_HASH_Init( &ctx->hhash ) != HAL_OK )
     {
         return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
     }
@@ -135,36 +135,40 @@ int mbedtls_sha256_starts_ret(mbedtls_sha256_context *ctx, int is224)
 
 #ifdef ST_HW_CONTEXT_SAVING
     /* save hw context */
-    HAL_HASH_ContextSaving(&ctx->hhash, ctx->ctx_save_regs);
+    HAL_HASH_ContextSaving( &ctx->hhash, ctx->ctx_save_regs );
 #endif /* ST_HW_CONTEXT_SAVING */
 
     return 0;
 }
 
-int mbedtls_internal_sha256_process( mbedtls_sha256_context *ctx, const unsigned char data[ST_SHA256_BLOCK_SIZE] )
+int mbedtls_internal_sha256_process( mbedtls_sha256_context *ctx,
+                                     const unsigned char data[ST_SHA256_BLOCK_SIZE] )
 {
     SHA256_VALIDATE_RET( ctx != NULL );
     SHA256_VALIDATE_RET( (const unsigned char *)data != NULL );
 
 #ifdef ST_HW_CONTEXT_SAVING
     /* restore hw context */
-    HAL_HASH_ContextRestoring(&ctx->hhash, ctx->ctx_save_regs);
+    HAL_HASH_ContextRestoring( &ctx->hhash, ctx->ctx_save_regs );
 #endif /* ST_HW_CONTEXT_SAVING */
 
-    if (HAL_HASH_Accumulate(&ctx->hhash, (uint8_t *) data, ST_SHA256_BLOCK_SIZE, ST_SHA256_TIMEOUT) != 0)
+    if( HAL_HASH_Accumulate( &ctx->hhash, (uint8_t *) data,
+                             ST_SHA256_BLOCK_SIZE, ST_SHA256_TIMEOUT ) != 0 )
     {
-      return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+        return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
     }
 
 #ifdef ST_HW_CONTEXT_SAVING
     /* save hw context */
-    HAL_HASH_ContextSaving(&ctx->hhash, ctx->ctx_save_regs);
+    HAL_HASH_ContextSaving( &ctx->hhash, ctx->ctx_save_regs );
 #endif /* ST_HW_CONTEXT_SAVING */
 
     return 0;
 }
 
-int mbedtls_sha256_update_ret(mbedtls_sha256_context *ctx, const unsigned char *input, size_t ilen)
+int mbedtls_sha256_update( mbedtls_sha256_context *ctx,
+                            const unsigned char *input,
+                            size_t ilen )
 {
     size_t currentlen = ilen;
 
@@ -173,33 +177,39 @@ int mbedtls_sha256_update_ret(mbedtls_sha256_context *ctx, const unsigned char *
 
 #ifdef ST_HW_CONTEXT_SAVING
     /* restore hw context */
-    HAL_HASH_ContextRestoring(&ctx->hhash, ctx->ctx_save_regs);
+    HAL_HASH_ContextRestoring( &ctx->hhash, ctx->ctx_save_regs );
 #endif /* ST_HW_CONTEXT_SAVING */
 
-    if (currentlen < (ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len))
+    if( currentlen < (ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len) )
     {
         /* only store input data in context buffer */
-        memcpy(ctx->sbuf + ctx->sbuf_len, input, currentlen);
+        memcpy( ctx->sbuf + ctx->sbuf_len, input, currentlen );
         ctx->sbuf_len += currentlen;
     }
     else
     {
         /* fill context buffer until ST_SHA256_BLOCK_SIZE bytes, and process it */
-        memcpy(ctx->sbuf + ctx->sbuf_len, input, (ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len));
-        currentlen -= (ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len);
+        memcpy( ctx->sbuf + ctx->sbuf_len, input,
+                ( ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len ) );
+        currentlen -= ( ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len );
 
-        if (HAL_HASH_Accumulate(&ctx->hhash, (uint8_t *)(ctx->sbuf), ST_SHA256_BLOCK_SIZE + ctx->first, ST_SHA256_TIMEOUT) != 0)
+        if( HAL_HASH_Accumulate( &ctx->hhash, (uint8_t *)(ctx->sbuf),
+                                  ST_SHA256_BLOCK_SIZE + ctx->first,
+                                  ST_SHA256_TIMEOUT ) != 0 )
         {
-          return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+            return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
         }
 
         /* Process following input data with size multiple of ST_SHA256_BLOCK_SIZE bytes */
         size_t iter = currentlen / ST_SHA256_BLOCK_SIZE;
-        if (iter != 0)
+        if( iter != 0 )
         {
-            if (HAL_HASH_Accumulate(&ctx->hhash, (uint8_t *)(input + ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len), (iter * ST_SHA256_BLOCK_SIZE), ST_SHA256_TIMEOUT) != 0)
+            if( HAL_HASH_Accumulate( &ctx->hhash,
+                                      (uint8_t *)(input + ST_SHA256_BLOCK_SIZE + ctx->first - ctx->sbuf_len),
+                                      (iter * ST_SHA256_BLOCK_SIZE),
+                                      ST_SHA256_TIMEOUT ) != 0 )
             {
-              return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+                return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
             }
         }
 
@@ -208,33 +218,36 @@ int mbedtls_sha256_update_ret(mbedtls_sha256_context *ctx, const unsigned char *
 
         /* Store only the remaining input data up to (ST_SHA256_BLOCK_SIZE - 1) bytes */
         ctx->sbuf_len = currentlen % ST_SHA256_BLOCK_SIZE;
-        if (ctx->sbuf_len != 0)
+        if( ctx->sbuf_len != 0 )
         {
-            memcpy(ctx->sbuf, input + ilen - ctx->sbuf_len, ctx->sbuf_len);
+            memcpy( ctx->sbuf, input + ilen - ctx->sbuf_len, ctx->sbuf_len );
         }
     }
 
 #ifdef ST_HW_CONTEXT_SAVING
     /* save hw context */
-    HAL_HASH_ContextSaving(&ctx->hhash, ctx->ctx_save_regs);
+    HAL_HASH_ContextSaving( &ctx->hhash, ctx->ctx_save_regs );
 #endif /* ST_HW_CONTEXT_SAVING */
+
     return 0;
 }
 
-int mbedtls_sha256_finish_ret(mbedtls_sha256_context *ctx, unsigned char output[32])
+int mbedtls_sha256_finish( mbedtls_sha256_context *ctx,
+                            unsigned char *output )
 {
     SHA256_VALIDATE_RET( ctx != NULL );
-    SHA256_VALIDATE_RET( (unsigned char *)output != NULL );
+    SHA256_VALIDATE_RET( output != NULL );
 
 #ifdef ST_HW_CONTEXT_SAVING
     /* restore hw context */
-    HAL_HASH_ContextRestoring(&ctx->hhash, ctx->ctx_save_regs);
+    HAL_HASH_ContextRestoring( &ctx->hhash, ctx->ctx_save_regs );
 #endif /* ST_HW_CONTEXT_SAVING */
 
     /* Last accumulation for pending bytes in sbuf_len, then trig processing and get digest */
-    if (HAL_HASH_AccumulateLast(&ctx->hhash, ctx->sbuf, ctx->sbuf_len, output,ST_SHA256_TIMEOUT) != 0)
+    if( HAL_HASH_AccumulateLast( &ctx->hhash, ctx->sbuf, ctx->sbuf_len,
+                                  output, ST_SHA256_TIMEOUT ) != 0 )
     {
-      return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+        return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
     }
 
     ctx->sbuf_len = 0;
