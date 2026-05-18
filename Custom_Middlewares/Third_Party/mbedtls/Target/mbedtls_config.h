@@ -468,14 +468,24 @@
  * Uncomment a macro to enable alternate implementation of the corresponding
  * function.
  */
-/* Required for all the functions in this section */
-#define MBEDTLS_ECP_INTERNAL_ALT
+/* MBEDTLS_ECP_INTERNAL_ALT and all per-step flags are intentionally disabled.
+ *
+ * All Short Weierstrass ECC operations used by TLS 1.3 are already fully
+ * hardware-accelerated at a higher level:
+ *   - ECDH  key exchange  → MBEDTLS_ECDH_GEN_PUBLIC_ALT  + MBEDTLS_ECDH_COMPUTE_SHARED_ALT
+ *   - ECDSA sign / verify → MBEDTLS_ECDSA_SIGN_ALT        + MBEDTLS_ECDSA_VERIFY_ALT
+ *
+ * Both ALT layers call HAL_PKA_ECCMulEx / HAL_PKA_ECDSASign / HAL_PKA_ECDSAVerif
+ * directly and never reach ecp_mul_comb(), so hooking the inner loop via
+ * ECP_INTERNAL_ALT gives no benefit for those paths.
+ */
+//#define MBEDTLS_ECP_INTERNAL_ALT
 /* Support for Weierstrass curves with Jacobi representation */
-//#define MBEDTLS_ECP_RANDOMIZE_JAC_ALT         /* No PKA primitive — software fallback */
-#define MBEDTLS_ECP_ADD_MIXED_ALT               /* HAL_PKA_ECCCompleteAddition */
-//#define MBEDTLS_ECP_DOUBLE_JAC_ALT            /* No PKA primitive — software fallback */
-#define MBEDTLS_ECP_NORMALIZE_JAC_MANY_ALT      /* HAL_PKA_ECCProjective2Affine (loop) */
-#define MBEDTLS_ECP_NORMALIZE_JAC_ALT           /* HAL_PKA_ECCProjective2Affine */
+//#define MBEDTLS_ECP_RANDOMIZE_JAC_ALT
+//#define MBEDTLS_ECP_ADD_MIXED_ALT
+//#define MBEDTLS_ECP_DOUBLE_JAC_ALT
+//#define MBEDTLS_ECP_NORMALIZE_JAC_MANY_ALT
+//#define MBEDTLS_ECP_NORMALIZE_JAC_ALT
 /* Support for curves with Montgomery arithmetic */
 //#define MBEDTLS_ECP_DOUBLE_ADD_MXZ_ALT
 //#define MBEDTLS_ECP_RANDOMIZE_MXZ_ALT
