@@ -222,6 +222,13 @@ void main_app(void *arg)
     
     InitLwip();
 
+    
+    HAL_GPIO_WritePin(m_OUT_0_GPIO_Port, m_OUT_0_Pin, GPIO_PIN_SET);
+
+    osDelay(1000);
+
+    HAL_GPIO_WritePin(m_OUT_0_GPIO_Port, m_OUT_0_Pin, GPIO_PIN_RESET);
+
     ret = mbedtls_sha256_self_test(v);
     if (ret != 0)
         return;
@@ -266,6 +273,10 @@ void main_app(void *arg)
         mbedtls_ecp_group_free( &grp );
         mbedtls_mpi_free( &d );
         mbedtls_ecp_point_free( &Q );
+    }
+
+    while (1) {
+        osDelay(1000);
     }
     return;
 }
