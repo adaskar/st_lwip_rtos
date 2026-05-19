@@ -10,6 +10,18 @@
 #include "lwip/dhcp.h"
 #include "lwip/netifapi.h"
 
+extern UART_HandleTypeDef huart3;
+
+int _write(int fd, unsigned char *buf, int len)
+{
+    HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, 1);
+    if (fd == 1 || fd == 2)
+    {
+        HAL_UART_Transmit(&huart3, buf, len, 999);
+    }
+    return len;
+}
+
 struct netif gnetif; /* network interface structure */
 
 /* Definitions for Init Thread */
@@ -222,7 +234,6 @@ void main_app(void *arg)
     
     InitLwip();
 
-    
     HAL_GPIO_WritePin(m_OUT_0_GPIO_Port, m_OUT_0_Pin, GPIO_PIN_SET);
 
     osDelay(1000);
