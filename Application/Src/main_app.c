@@ -18,26 +18,27 @@ int dummy_rng(void *p_rng, unsigned char *output, size_t len)
     return 0;
 }
 
-int main_app(void)
+void main_app(void *arg)
 {
+    (void)arg;
     int ret = 0;
     int v = 1; /* v=1 for verbose mode */
 
     ret = mbedtls_sha256_self_test(v);
     if (ret != 0)
-        return ret;
+        return;
     ret = mbedtls_aes_self_test(v);
     if (ret != 0)
-        return ret;
+        return;
     ret = mbedtls_gcm_self_test(v);
     if (ret != 0)
-        return ret;
+        return;
     ret = mbedtls_rsa_self_test(v);
     if (ret != 0)
-        return ret;
+        return;
     ret = mbedtls_ecp_self_test(v);
     if (ret != 0)
-        return ret;
+        return;
 
     /* Test ECDH (PKA) */
     {
@@ -68,5 +69,5 @@ int main_app(void)
         mbedtls_mpi_free( &d );
         mbedtls_ecp_point_free( &Q );
     }
-    return ret;
+    return;
 }
