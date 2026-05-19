@@ -38,13 +38,6 @@ const osThreadAttr_t DHCPThread_attributes = {
 };
 
 
-osThreadId_t ostHTTP;
-const osThreadAttr_t osaHTTP = {
-  .name = "HTTP Server",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 1024 * 4
-};
-
 #undef LWIP_DHCP
 
 #if LWIP_DHCP
@@ -218,6 +211,15 @@ static void InitLwip(void)
 #endif
 }
 
+
+/// HTTP
+osThreadId_t ostHTTP;
+const osThreadAttr_t osaHTTP = {
+  .name = "HTTP Server",
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 1024 * 4
+};
+
 void http_server_task(void *argument)
 {
     while(gnetif.ip_addr.addr == 0)
@@ -308,15 +310,261 @@ void http_server_task(void *argument)
     }
 }
 
+/// HTTPS
+osThreadId_t ostHTTPS;
+const osThreadAttr_t osaHTTPS = {
+  .name = "HTTPS Server",
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 1024 * 8
+};
+
+#include "cert.h"
+#include "key.h"
+
+int dummy_rng(void *p_rng, unsigned char *output, size_t len)
+{
+    (void)p_rng;
+
+    uint32_t random_val;
+
+    extern RNG_HandleTypeDef hrng;
+
+    for(size_t i = 0; i < len; i += 4)
+    {
+        if(HAL_RNG_GenerateRandomNumber(&hrng,
+                                        &random_val) != HAL_OK)
+        {
+            return -1;
+        }
+
+        size_t to_copy =
+            ((len - i) >= 4) ? 4 : (len - i);
+
+        memcpy(output + i,
+               &random_val,
+               to_copy);
+    }
+
+    return 0;
+}
+
+static int net_send(void *ctx,
+                    const unsigned char *buf,
+                    size_t len)
+{
+    int fd = *(int *)ctx;
+
+    return send(fd, buf, len, 0);
+}
+
+static int net_recv(void *ctx,
+                    unsigned char *buf,
+                    size_t len)
+{
+    int fd = *(int *)ctx;
+
+    return recv(fd, buf, len, 0);
+}
+
+static void https_server_task(void *argument)
+{
+    (void)argument;
+    int server_fd;
+    int client_fd;
+
+    struct sockaddr_in server_addr;
+
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+
+    mbedtls_x509_crt srvcert;
+    mbedtls_pk_context pkey;
+
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+
+    const char *pers = "stm32_https";
+
+    char rx_buffer[1024];
+
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&conf);
+
+    mbedtls_x509_crt_init(&srvcert);
+    mbedtls_pk_init(&pkey);
+
+    mbedtls_entropy_init(&entropy);
+    mbedtls_ctr_drbg_init(&ctr_drbg);
+
+    if(mbedtls_ctr_drbg_seed(&ctr_drbg,
+                             mbedtls_entropy_func,
+                             &entropy,
+                             (const unsigned char *)pers,
+                             strlen(pers)) != 0)
+    {
+        printf("DRBG seed failed\n");
+        return;
+    }
+
+    if(mbedtls_x509_crt_parse(
+            &srvcert,
+            (const unsigned char *)cert_pem,
+            cert_pem_len) != 0)
+    {
+        printf("Certificate parse failed\n");
+        return;
+    }
+
+    if(mbedtls_pk_parse_key(
+            &pkey,
+            (const unsigned char *)key_pem,
+            key_pem_len,
+            NULL,
+            0,
+            dummy_rng,
+            NULL) != 0)
+    {
+        printf("Key parse failed\n");
+        return;
+    }
+
+    if(mbedtls_ssl_config_defaults(
+            &conf,
+            MBEDTLS_SSL_IS_SERVER,
+            MBEDTLS_SSL_TRANSPORT_STREAM,
+            MBEDTLS_SSL_PRESET_DEFAULT) != 0)
+    {
+        printf("SSL config failed\n");
+        return;
+    }
+
+    mbedtls_ssl_conf_rng(&conf,
+                         dummy_rng,
+                         NULL);
+
+    if(mbedtls_ssl_conf_own_cert(
+            &conf,
+            &srvcert,
+            &pkey) != 0)
+    {
+        printf("SSL own cert failed\n");
+        return;
+    }
+
+    if(mbedtls_ssl_setup(&ssl,
+                         &conf) != 0)
+    {
+        printf("SSL setup failed\n");
+        return;
+    }
+
+    server_fd = socket(AF_INET,
+                       SOCK_STREAM,
+                       0);
+
+    if(server_fd < 0)
+    {
+        printf("HTTPS socket failed\n");
+        return;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(443);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if(bind(server_fd,
+            (struct sockaddr *)&server_addr,
+            sizeof(server_addr)) < 0)
+    {
+        printf("HTTPS bind failed\n");
+        return;
+    }
+
+    if(listen(server_fd, 5) < 0)
+    {
+        printf("HTTPS listen failed\n");
+        return;
+    }
+
+    printf("HTTPS server listening on port 443\n");
+
+    while(1)
+    {
+        client_fd = accept(server_fd,
+                           NULL,
+                           NULL);
+
+        if(client_fd < 0)
+        {
+            continue;
+        }
+
+        printf("HTTPS client connected\n");
+
+        mbedtls_ssl_session_reset(&ssl);
+
+        mbedtls_ssl_set_bio(&ssl,
+                            &client_fd,
+                            net_send,
+                            net_recv,
+                            NULL);
+
+        int ret;
+
+        ret = mbedtls_ssl_handshake(&ssl);
+
+        if(ret != 0)
+        {
+            printf("TLS handshake failed: %d\n", ret);
+
+            closesocket(client_fd);
+
+            continue;
+        }
+
+        ret = mbedtls_ssl_read(
+            &ssl,
+            (unsigned char *)rx_buffer,
+            sizeof(rx_buffer) - 1);
+
+        if(ret > 0)
+        {
+            rx_buffer[ret] = 0;
+
+            printf("HTTPS Request:\n%s\n",
+                   rx_buffer);
+
+            const char *response =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Hello from STM32 HTTPS server\r\n";
+
+            mbedtls_ssl_write(
+                &ssl,
+                (const unsigned char *)response,
+                strlen(response));
+        }
+
+        mbedtls_ssl_close_notify(&ssl);
+
+        closesocket(client_fd);
+
+        printf("HTTPS client disconnected\n");
+    }
+}
+
 void main_app(void *arg)
 {
     (void)arg;
-    int ret = 0;
-    int v = 1; /* v=1 for verbose mode */
     
     InitLwip();
 
-    ostHTTP = osThreadNew(http_server_task, NULL, &osaHTTP);
+    //ostHTTP = osThreadNew(http_server_task, NULL, &osaHTTP);
+    ostHTTPS = osThreadNew(https_server_task, NULL, &osaHTTPS);
 
     while (1) {
         osDelay(1000);

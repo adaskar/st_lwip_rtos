@@ -995,6 +995,14 @@ size_t mbedtls_rsa_get_len( const mbedtls_rsa_context *ctx )
     return( ctx->len );
 }
 
+/*
+ * Get length in bits of RSA modulus
+ */
+size_t mbedtls_rsa_get_bitlen( const mbedtls_rsa_context *ctx )
+{
+    return( mbedtls_mpi_bitlen( &ctx->N ) );
+}
+
 
 #if defined(MBEDTLS_GENPRIME)
 
