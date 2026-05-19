@@ -88,14 +88,13 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
 
-  osThreadId_t ostMainApp;
   const osThreadAttr_t osaMainApp = {
     .name = "main_app",
     .priority = (osPriority_t) osPriorityNormal1,
     .stack_size = 1024 * 4
   };
   extern void main_app(void *arg);
-  ostMainApp = osThreadNew(main_app, NULL, &osaMainApp);
+  osThreadNew(main_app, (void *)defaultTaskHandle, &osaMainApp);
 
   /* USER CODE END RTOS_THREADS */
 
