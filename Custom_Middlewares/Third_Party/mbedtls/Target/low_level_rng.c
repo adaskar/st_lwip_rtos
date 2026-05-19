@@ -29,14 +29,13 @@ static uint8_t users = 0;
 
 static uint8_t atomic_incr_u8(__IO uint8_t *valuePtr, uint8_t delta)
 {
-  COMPILER_BARRIER();
-  uint8_t newValue;
-  do
-  {
-    newValue = __LDREXB(valuePtr) + delta;
-  } while (__STREXB(newValue, valuePtr));
-  COMPILER_BARRIER();
-  return newValue;
+#ifdef __GNUC__
+  return __atomic_add_fetch(valuePtr, delta, __ATOMIC_SEQ_CST);
+#else
+  uint8_t prev = *valuePtr;
+  *valuePtr = prev + delta;
+  return prev + delta;
+#endif
 }
 
 void RNG_Init(void)
@@ -75,8 +74,6 @@ void RNG_GetBytes(uint8_t *output, size_t length, size_t *output_length)
   __IO uint8_t random[4];
   *output_length = 0;
 
-  printf("[RNG] RNG_GetBytes requested %d bytes\n", (int)length);
-
   /* Get Random byte */
   while ((*output_length < length) && (ret == 0))
   {
@@ -112,7 +109,6 @@ void RNG_GetBytes(uint8_t *output, size_t length, size_t *output_length)
     printf("[RNG] Error flags detected: 0x%lx\n", (unsigned long)flags);
     *output_length = 0;
   }
-  printf("[RNG] RNG_GetBytes gathered %d bytes\n", (int)*output_length);
 }
 
 void RNG_DeInit(void)
@@ -129,7 +125,6 @@ void RNG_DeInit(void)
 /*  interface for mbed-crypto */
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
 {
-  printf("[RNG] mbedtls_hardware_poll called, len=%d\n", (int)len);
   RNG_GetBytes(output, len, olen);
   if (*olen != len)
   {
