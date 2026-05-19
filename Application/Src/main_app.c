@@ -9,6 +9,7 @@
 #include "lwip/tcpip.h"
 #include "lwip/dhcp.h"
 #include "lwip/netifapi.h"
+#include "lwip/sockets.h"
 
 extern UART_HandleTypeDef huart3;
 
@@ -22,23 +23,29 @@ int _write(int fd, unsigned char *buf, int len)
     return len;
 }
 
-struct netif gnetif; /* network interface structure */
-
-/* Definitions for Init Thread */
+struct netif gnetif;
 osThreadId_t EthLinkHandle;
 const osThreadAttr_t EthLinkThread_attributes = {
   .name = "Eth Link",
   .priority = (osPriority_t) osPriorityNormal,
   .stack_size = 1024 * 4
 };
-
-/* Definitions for Init Thread */
 osThreadId_t DHCPThreadHandle;
 const osThreadAttr_t DHCPThread_attributes = {
   .name = "DHCP Thread",
   .priority = (osPriority_t) osPriorityBelowNormal,
   .stack_size = 1024 * 4
 };
+
+
+osThreadId_t ostHTTP;
+const osThreadAttr_t osaHTTP = {
+  .name = "HTTP Server",
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 1024 * 4
+};
+
+#undef LWIP_DHCP
 
 #if LWIP_DHCP
 
@@ -168,21 +175,6 @@ void DHCP_Thread_Entry(void *argument)
 }
 #endif  /* LWIP_DHCP */
 
-int dummy_rng(void *p_rng, unsigned char *output, size_t len)
-{
-    (void)p_rng;
-    uint32_t random_val;
-    extern RNG_HandleTypeDef hrng;
-    for( size_t i = 0; i < len; i += 4 )
-    {
-        if( HAL_RNG_GenerateRandomNumber( &hrng, &random_val ) != HAL_OK )
-            return -1;
-        size_t to_copy = ( len - i >= 4 ) ? 4 : ( len - i );
-        memcpy( output + i, &random_val, to_copy );
-    }
-    return 0;
-}
-
 /**
   * @brief  Initializes the lwIP stack
   * @param  None
@@ -226,6 +218,96 @@ static void InitLwip(void)
 #endif
 }
 
+void http_server_task(void *argument)
+{
+    while(gnetif.ip_addr.addr == 0)
+    {
+        osDelay(100);
+    }
+
+    printf("Network ready\n");
+
+    int server_fd;
+
+    struct sockaddr_in addr;
+
+    server_fd = socket(AF_INET,
+                       SOCK_STREAM,
+                       IPPROTO_TCP);
+
+    if(server_fd < 0)
+    {
+        printf("Socket failed\n");
+
+        for(;;)
+            osDelay(1000);
+    }
+
+    memset(&addr, 0, sizeof(addr));
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(80);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if(bind(server_fd,
+            (struct sockaddr *)&addr,
+            sizeof(addr)) < 0)
+    {
+        printf("Bind failed\n");
+
+        closesocket(server_fd);
+
+        for(;;)
+            osDelay(1000);
+    }
+
+    listen(server_fd, 5);
+
+    printf("HTTP server started\n");
+
+    while(1)
+    {
+        int client;
+
+        client = accept(server_fd,
+                        NULL,
+                        NULL);
+
+        if(client >= 0)
+        {
+            char buffer[1024];
+
+            int len;
+
+            len = recv(client,
+                       buffer,
+                       sizeof(buffer)-1,
+                       0);
+
+            if(len > 0)
+            {
+                buffer[len] = 0;
+
+                printf("%s\n", buffer);
+
+                const char *resp =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "STM32 HTTP SERVER\r\n";
+
+                send(client,
+                     resp,
+                     strlen(resp),
+                     0);
+            }
+
+            closesocket(client);
+        }
+    }
+}
+
 void main_app(void *arg)
 {
     (void)arg;
@@ -234,57 +316,7 @@ void main_app(void *arg)
     
     InitLwip();
 
-    HAL_GPIO_WritePin(m_OUT_0_GPIO_Port, m_OUT_0_Pin, GPIO_PIN_SET);
-
-    osDelay(1000);
-
-    HAL_GPIO_WritePin(m_OUT_0_GPIO_Port, m_OUT_0_Pin, GPIO_PIN_RESET);
-
-    ret = mbedtls_sha256_self_test(v);
-    if (ret != 0)
-        return;
-    ret = mbedtls_aes_self_test(v);
-    if (ret != 0)
-        return;
-    ret = mbedtls_gcm_self_test(v);
-    if (ret != 0)
-        return;
-    ret = mbedtls_rsa_self_test(v);
-    if (ret != 0)
-        return;
-    ret = mbedtls_ecp_self_test(v);
-    if (ret != 0)
-        return;
-
-    /* Test ECDH (PKA) */
-    {
-        mbedtls_ecp_group grp;
-        mbedtls_mpi d;
-        mbedtls_ecp_point Q;
-        mbedtls_ecp_group_init( &grp );
-        mbedtls_mpi_init( &d );
-        mbedtls_ecp_point_init( &Q );
-
-        printf( "  Testing ECDH key generation (PKA)...\n" );
-        if( mbedtls_ecp_group_load( &grp, MBEDTLS_ECP_DP_SECP256R1 ) != 0 )
-        {
-            printf( "  Failed to load SECP256R1 group\n" );
-        }
-        else
-        {
-            if( mbedtls_ecdh_gen_public( &grp, &d, &Q, dummy_rng, NULL ) == 0 )
-            {
-                printf( "  Successfully generated ECDH key pair using PKA\n\n" );
-            }
-            else
-            {
-                printf( "  Failed to generate ECDH key pair\n\n" );
-            }
-        }
-        mbedtls_ecp_group_free( &grp );
-        mbedtls_mpi_free( &d );
-        mbedtls_ecp_point_free( &Q );
-    }
+    ostHTTP = osThreadNew(http_server_task, NULL, &osaHTTP);
 
     while (1) {
         osDelay(1000);
