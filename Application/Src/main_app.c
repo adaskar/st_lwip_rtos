@@ -394,37 +394,56 @@ static void https_server_task(void *argument)
     mbedtls_pk_init(&pkey);
 
     mbedtls_entropy_init(&entropy);
+
+    extern int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen);
+#if !defined(MBEDTLS_ENTROPY_MIN_HARDWARE)
+#define MBEDTLS_ENTROPY_MIN_HARDWARE 32
+#endif
+    int add_ret = mbedtls_entropy_add_source(&entropy,
+                                             mbedtls_hardware_poll,
+                                             NULL,
+                                             MBEDTLS_ENTROPY_MIN_HARDWARE,
+                                             MBEDTLS_ENTROPY_SOURCE_STRONG);
+    if (add_ret != 0)
+    {
+        printf("mbedtls_entropy_add_source failed: -0x%04X\n", (unsigned int)-add_ret);
+        return;
+    }
+
     mbedtls_ctr_drbg_init(&ctr_drbg);
 
-    if(mbedtls_ctr_drbg_seed(&ctr_drbg,
+    int seed_ret = mbedtls_ctr_drbg_seed(&ctr_drbg,
                              mbedtls_entropy_func,
                              &entropy,
                              (const unsigned char *)pers,
-                             strlen(pers)) != 0)
+                             strlen(pers));
+    if(seed_ret != 0)
     {
-        printf("DRBG seed failed\n");
+        printf("DRBG seed failed: -0x%04X\n", (unsigned int)-seed_ret);
         return;
     }
 
-    if(mbedtls_x509_crt_parse(
+    int cert_ret = mbedtls_x509_crt_parse(
             &srvcert,
             (const unsigned char *)cert_pem,
-            cert_pem_len) != 0)
+            cert_pem_len);
+    if(cert_ret != 0)
     {
-        printf("Certificate parse failed\n");
+        printf("Certificate parse failed: -0x%04X\n", (unsigned int)-cert_ret);
         return;
     }
 
-    if(mbedtls_pk_parse_key(
+    int key_ret = mbedtls_pk_parse_key(
             &pkey,
             (const unsigned char *)key_pem,
             key_pem_len,
             NULL,
             0,
             dummy_rng,
-            NULL) != 0)
+            NULL);
+    if(key_ret != 0)
     {
-        printf("Key parse failed\n");
+        printf("Key parse failed: -0x%04X\n", (unsigned int)-key_ret);
         return;
     }
 

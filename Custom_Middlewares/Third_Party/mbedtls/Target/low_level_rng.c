@@ -19,9 +19,10 @@
   */
 #include "low_level_rng.h"
 #include "stm32h5xx_hal.h"
+#include <stdio.h>
 extern void Error_Handler(void);
 
-static RNG_HandleTypeDef handle;
+extern RNG_HandleTypeDef hrng;
 static uint8_t users = 0;
 
 #define COMPILER_BARRIER() __ASM __IO("" : : : "memory")
@@ -54,17 +55,17 @@ void RNG_Init(void)
   __HAL_RCC_RNG_CLK_ENABLE();
 
   /* Initialize RNG instance */
-  handle.Instance = RNG;
-  handle.State = HAL_RNG_STATE_RESET;
-  handle.Lock = HAL_UNLOCKED;
+  hrng.Instance = RNG;
+  hrng.State = HAL_RNG_STATE_RESET;
+  hrng.Lock = HAL_UNLOCKED;
 
-  if (HAL_RNG_Init(&handle) != HAL_OK)
+  if (HAL_RNG_Init(&hrng) != HAL_OK)
   {
     Error_Handler();
   }
 
   /* first random number generated after setting the RNGEN bit should not be used */
-  HAL_RNG_GenerateRandomNumber(&handle, &dummy);
+  HAL_RNG_GenerateRandomNumber(&hrng, &dummy);
 }
 
 void RNG_GetBytes(uint8_t *output, size_t length, size_t *output_length)
@@ -74,11 +75,16 @@ void RNG_GetBytes(uint8_t *output, size_t length, size_t *output_length)
   __IO uint8_t random[4];
   *output_length = 0;
 
+  printf("[RNG] RNG_GetBytes requested %d bytes\n", (int)length);
+
   /* Get Random byte */
   while ((*output_length < length) && (ret == 0))
   {
-    if (HAL_RNG_GenerateRandomNumber(&handle, (uint32_t *)random) != HAL_OK)
+    HAL_StatusTypeDef status = HAL_RNG_GenerateRandomNumber(&hrng, (uint32_t *)random);
+    if (status != HAL_OK)
     {
+      printf("[RNG] GenerateRandomNumber failed, status=%d, state=%d, errorCode=0x%lx\n", 
+             (int)status, (int)hrng.State, (unsigned long)hrng.ErrorCode);
       /* retry when random number generated are not immediately available */
       if (try < 3)
       {
@@ -100,16 +106,19 @@ void RNG_GetBytes(uint8_t *output, size_t length, size_t *output_length)
     }
   }
   /* Just be extra sure that we didn't do it wrong */
-  if ((__HAL_RNG_GET_FLAG(&handle, (RNG_FLAG_CECS | RNG_FLAG_SECS))) != 0)
+  uint32_t flags = __HAL_RNG_GET_FLAG(&hrng, (RNG_FLAG_CECS | RNG_FLAG_SECS));
+  if (flags != 0)
   {
+    printf("[RNG] Error flags detected: 0x%lx\n", (unsigned long)flags);
     *output_length = 0;
   }
+  printf("[RNG] RNG_GetBytes gathered %d bytes\n", (int)*output_length);
 }
 
 void RNG_DeInit(void)
 {
   /*Disable the RNG peripheral */
-  HAL_RNG_DeInit(&handle);
+  HAL_RNG_DeInit(&hrng);
   /* RNG Peripheral clock disable - assume we're the only users of RNG  */
   __HAL_RCC_RNG_CLK_DISABLE();
 
@@ -120,9 +129,11 @@ void RNG_DeInit(void)
 /*  interface for mbed-crypto */
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
 {
+  printf("[RNG] mbedtls_hardware_poll called, len=%d\n", (int)len);
   RNG_GetBytes(output, len, olen);
   if (*olen != len)
   {
+    printf("[RNG] mbedtls_hardware_poll FAILED: gathered %d, expected %d\n", (int)*olen, (int)len);
     return MBEDTLS_ERR_ENTROPY_SOURCE_FAILED;
   }
   return 0;
