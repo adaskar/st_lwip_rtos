@@ -24,6 +24,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${LWIP_DIR}/src/core/udp.c
 
     # LwIP IPv4
+    ${LWIP_DIR}/src/core/ipv4/acd.c
     ${LWIP_DIR}/src/core/ipv4/autoip.c
     ${LWIP_DIR}/src/core/ipv4/dhcp.c
     ${LWIP_DIR}/src/core/ipv4/etharp.c

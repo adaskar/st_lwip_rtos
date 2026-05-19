@@ -142,7 +142,7 @@
 /* ================= SOCKET OPTIONS ========================= */
 /* ========================================================= */
 
-#define LWIP_NETCONN                   1
+#define LWIP_NETCONN                   0
 #define LWIP_SOCKET                    1
 
 /*
