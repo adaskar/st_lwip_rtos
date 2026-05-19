@@ -446,8 +446,8 @@ static void https_server_task(void *argument)
 
     /* Set threshold to 1 during debugging to see handshake progress.
      * Set to 0 in production to silence the output.                   */
-    mbedtls_debug_set_threshold(1);
-    mbedtls_ssl_conf_dbg(&conf, my_debug, NULL);
+    // mbedtls_debug_set_threshold(1);
+    // mbedtls_ssl_conf_dbg(&conf, my_debug, NULL);
 
     ret = mbedtls_ssl_conf_own_cert(&conf, &srvcert, &pkey);
     if (ret != 0)
