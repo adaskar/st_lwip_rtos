@@ -90,7 +90,7 @@ void MX_FREERTOS_Init(void) {
 
   const osThreadAttr_t osaMainApp = {
     .name = "main_app",
-    .priority = (osPriority_t) osPriorityNormal1,
+    .priority = (osPriority_t) osPriorityNormal,
     .stack_size = 1024 * 4
   };
   extern void main_app(void *arg);
