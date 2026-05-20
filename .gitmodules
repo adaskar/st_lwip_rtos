@@ -4,3 +4,6 @@
 [submodule "Custom_Middlewares/Components/lan8742"]
 	path = Custom_Middlewares/Components/lan8742
 	url = https://github.com/STMicroelectronics/stm32-lan8742
+[submodule "Custom_Middlewares/Third_Party/mbedtls/stm32-mw-mbedtls"]
+	path = Custom_Middlewares/Third_Party/mbedtls/stm32-mw-mbedtls
+	url = https://github.com/STMicroelectronics/stm32-mw-mbedtls.git
