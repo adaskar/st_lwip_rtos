@@ -263,7 +263,7 @@ osThreadId_t ostHTTPS;
 const osThreadAttr_t osaHTTPS = {
   .name = "HTTPS Server",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 1024 * 32
+  .stack_size = 1024 * 4
 };
 
 #include "cert.h"
@@ -286,14 +286,14 @@ static mbedtls_pk_context     pkey;
 static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context ctr_drbg;
 
-static void my_debug(void *ctx, int level,
-                     const char *file, int line,
-                     const char *str)
-{
-    (void)ctx;
-    (void)level;
-    printf("%s:%04d: %s", file, line, str);
-}
+// static void my_debug(void *ctx, int level,
+//                      const char *file, int line,
+//                      const char *str)
+// {
+//     (void)ctx;
+//     (void)level;
+//     printf("%s:%04d: %s", file, line, str);
+// }
 
 /* Error code aliases (not always exposed in lwIP build) */
 #ifndef MBEDTLS_ERR_NET_CONN_RESET
