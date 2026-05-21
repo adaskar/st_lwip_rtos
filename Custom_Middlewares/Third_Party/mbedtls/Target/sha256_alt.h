@@ -55,7 +55,7 @@ typedef struct mbedtls_sha256_context
                                                          intermediate blocks,
                                                          or last input block) */
     uint8_t sbuf_len;                               /*!< Number of bytes stored in sbuf */
-    uint8_t ctx_save_regs[ST_SHA256_NB_HASH_REG*4];
+    uint8_t ctx_save_regs[ST_SHA256_NB_HASH_REG*4*2];
     uint8_t first;                                  /*!< Extra-bytes on first computed block */
 }
 mbedtls_sha256_context;

@@ -31,6 +31,11 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
+add_compile_definitions(
+    # Add user defined compile definitions here
+    USE_HAL_HASH_SUSPEND_RESUME=1
+)
+
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 

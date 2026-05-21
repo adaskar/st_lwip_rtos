@@ -48,7 +48,10 @@
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
 #define ST_SHA256_TIMEOUT     ((uint32_t) 3)
-/* #define ST_HW_CONTEXT_SAVING */   /* Allows hash buffers interleaving */
+#define ST_HW_CONTEXT_SAVING    /* Allows hash buffers interleaving */
+
+#define HAL_HASH_ContextSaving(h, b) HAL_HASH_Suspend((h), (b))
+#define HAL_HASH_ContextRestoring(h, b) HAL_HASH_Resume((h), (b))
 
 /* Private macro -------------------------------------------------------------*/
 #define SHA256_VALIDATE_RET(cond)                           \
