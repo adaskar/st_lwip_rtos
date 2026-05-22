@@ -8,38 +8,27 @@ extern "C" {
 #if defined(MBEDTLS_GCM_ALT)
 
 #include "stm32h5xx_hal.h"
-
 #include "mbedtls/threading.h"
 
-/**
- * \brief          The GCM context-type definition.
- */
 typedef struct mbedtls_gcm_context
 {
-    /*
-     * STM32 HAL CRYP handle
-     */
     CRYP_HandleTypeDef hcryp;
 
-    /*
-     * AES key size in bits
-     */
     uint32_t keybits;
 
-    /*
-     * AES key storage
-     */
     unsigned char key[32];
 
-#if defined(MBEDTLS_THREADING_C)
     /*
-     * Thread protection mutex
+     * Cached HAL-ready AES key words.
+     * Avoids converting key bytes on every TLS record.
      */
+    uint32_t key_words[8];
+
+#if defined(MBEDTLS_THREADING_C)
     mbedtls_threading_mutex_t mutex;
 #endif
 
-}
-mbedtls_gcm_context;
+} mbedtls_gcm_context;
 
 #endif /* MBEDTLS_GCM_ALT */
 

@@ -1,12 +1,13 @@
 /*
  * gcm_alt.c - STM32H5 MbedTLS GCM ALT
  *
- * TLS-safe version:
+ * Optimized TLS-safe version:
  * - Handles in-place buffers: input == output
  * - Handles unaligned MbedTLS TLS record buffers
  * - Handles 13-byte TLS AAD
  * - Handles non-4-byte payload lengths
- * - Converts key/IV bytes to BE uint32_t words for HAL
+ * - Caches HAL-ready key words in context
+ * - Reuses buffers to reduce allocations
  * - Uses STM32 GCM CTR start block IV || 0x00000002 for 12-byte IV
  * - Avoids HAL_CRYP_SetConfig()
  */
@@ -35,7 +36,6 @@
 
 #include <string.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #define GCM_TIMEOUT        5000
 #define GCM_ROUND_UP_4(x) (((x) + 3U) & ~3U)
@@ -127,8 +127,15 @@ int mbedtls_gcm_setkey(mbedtls_gcm_context *ctx,
         return MBEDTLS_ERR_GCM_BAD_INPUT;
 
     memset(ctx->key, 0, sizeof(ctx->key));
+    memset(ctx->key_words, 0, sizeof(ctx->key_words));
+
     memcpy(ctx->key, key, keybits / 8);
     ctx->keybits = keybits;
+
+    /*
+     * Prepare HAL-ready key words once.
+     */
+    gcm_bytes_to_be_words(ctx->key_words, ctx->key, keybits / 8);
 
     return 0;
 }
@@ -145,16 +152,13 @@ static HAL_StatusTypeDef stm32_gcm_hal_once(mbedtls_gcm_context *ctx,
 {
     HAL_StatusTypeDef status;
 
-    uint32_t key_words[8];
     uint32_t iv_words[4];
     uint32_t local_tag_words[4];
 
-    memset(key_words, 0, sizeof(key_words));
     memset(iv_words, 0, sizeof(iv_words));
     memset(local_tag_words, 0, sizeof(local_tag_words));
     memset(&ctx->hcryp, 0, sizeof(ctx->hcryp));
 
-    gcm_bytes_to_be_words(key_words, ctx->key, ctx->keybits / 8);
     gcm_bytes_to_be_words(iv_words, iv16_ctr, 16);
 
     __HAL_RCC_AES_CLK_ENABLE();
@@ -173,7 +177,7 @@ static HAL_StatusTypeDef stm32_gcm_hal_once(mbedtls_gcm_context *ctx,
         (ctx->keybits == 128) ? CRYP_KEYSIZE_128B : CRYP_KEYSIZE_256B;
 
     ctx->hcryp.Init.Algorithm = CRYP_AES_GCM_GMAC;
-    ctx->hcryp.Init.pKey = key_words;
+    ctx->hcryp.Init.pKey = ctx->key_words;
     ctx->hcryp.Init.pInitVect = iv_words;
 
     ctx->hcryp.Init.Header = (uint32_t *)add;
@@ -218,7 +222,6 @@ static HAL_StatusTypeDef stm32_gcm_hal_once(mbedtls_gcm_context *ctx,
     __HAL_RCC_AES_CLK_DISABLE();
 
 cleanup:
-    mbedtls_platform_zeroize(key_words, sizeof(key_words));
     mbedtls_platform_zeroize(iv_words, sizeof(iv_words));
     mbedtls_platform_zeroize(local_tag_words, sizeof(local_tag_words));
 
@@ -240,15 +243,12 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
     HAL_StatusTypeDef status;
 
     unsigned char generated_tag[16];
+    unsigned char iv_buf[16];
 
-    unsigned char *iv_buf = NULL;
     unsigned char *aad_buf = NULL;
-
     unsigned char *plain_buf = NULL;
     unsigned char *cipher_buf = NULL;
-    unsigned char *verify_cipher_buf = NULL;
 
-    size_t iv_alloc_len = 16;
     size_t aad_alloc_len;
     size_t data_alloc_len;
 
@@ -266,37 +266,22 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
         return MBEDTLS_ERR_GCM_BAD_INPUT;
 
     memset(generated_tag, 0, sizeof(generated_tag));
+    memset(iv_buf, 0, sizeof(iv_buf));
 
 #if defined(MBEDTLS_THREADING_C)
     if (mbedtls_mutex_lock(&ctx->mutex) != 0)
         return MBEDTLS_ERR_THREADING_MUTEX_ERROR;
 #endif
 
-#if 1
-    printf("GCM ALT: mode=%d len=%lu iv_len=%lu aad_len=%lu tag_len=%lu in=%p out=%p same=%d\r\n",
-           mode,
-           (unsigned long)length,
-           (unsigned long)iv_len,
-           (unsigned long)add_len,
-           (unsigned long)tag_len,
-           input,
-           output,
-           input == output);
-#endif
-
     aad_alloc_len  = GCM_ROUND_UP_4((add_len > 0) ? add_len : 1);
     data_alloc_len = GCM_ROUND_UP_4((length > 0) ? length : 1);
 
-    iv_buf     = mbedtls_calloc(1, iv_alloc_len);
     aad_buf    = mbedtls_calloc(1, aad_alloc_len);
     plain_buf  = mbedtls_calloc(1, data_alloc_len);
     cipher_buf = mbedtls_calloc(1, data_alloc_len);
 
-    if (iv_buf == NULL || aad_buf == NULL ||
-        plain_buf == NULL || cipher_buf == NULL)
-    {
+    if (aad_buf == NULL || plain_buf == NULL || cipher_buf == NULL)
         goto hw_failed;
-    }
 
     /*
      * STM32 CRYP GCM expects the initial counter block.
@@ -307,8 +292,6 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
      *
      * The HAL pInitVect is the CTR start block.
      */
-    memset(iv_buf, 0, iv_alloc_len);
-
     if (iv_len == 12)
     {
         memcpy(iv_buf, iv, 12);
@@ -351,14 +334,12 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
     }
     else
     {
-        verify_cipher_buf = mbedtls_calloc(1, data_alloc_len);
-
-        if (verify_cipher_buf == NULL)
-            goto hw_failed;
-
         if (length > 0)
             memcpy(cipher_buf, input, length);
 
+        /*
+         * Decrypt into plain_buf.
+         */
         status = stm32_gcm_hal_once(ctx,
                                     MBEDTLS_GCM_DECRYPT,
                                     length,
@@ -372,6 +353,12 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
         if (status != HAL_OK)
             goto hw_failed;
 
+        /*
+         * Reuse cipher_buf as the verification ciphertext buffer.
+         * Original ciphertext is no longer needed after decrypt.
+         */
+        memset(cipher_buf, 0, data_alloc_len);
+
         status = stm32_gcm_hal_once(ctx,
                                     MBEDTLS_GCM_ENCRYPT,
                                     length,
@@ -379,21 +366,11 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
                                     aad_buf,
                                     add_len,
                                     plain_buf,
-                                    verify_cipher_buf,
+                                    cipher_buf,
                                     generated_tag);
 
         if (status != HAL_OK)
             goto hw_failed;
-
-#if 0
-        printf("received tag : ");
-        for (size_t i = 0; i < tag_len; i++) printf("%02X", tag[i]);
-        printf("\r\n");
-
-        printf("generated tag: ");
-        for (size_t i = 0; i < tag_len; i++) printf("%02X", generated_tag[i]);
-        printf("\r\n");
-#endif
 
         if (gcm_ct_memcmp(generated_tag, tag, tag_len) != 0)
             goto auth_failed;
@@ -402,11 +379,9 @@ static int stm32_gcm_crypt_and_tag(mbedtls_gcm_context *ctx,
             memcpy(output, plain_buf, length);
     }
 
-    gcm_zero_free(iv_buf, iv_alloc_len);
     gcm_zero_free(aad_buf, aad_alloc_len);
     gcm_zero_free(plain_buf, data_alloc_len);
     gcm_zero_free(cipher_buf, data_alloc_len);
-    gcm_zero_free(verify_cipher_buf, data_alloc_len);
 
 #if defined(MBEDTLS_THREADING_C)
     mbedtls_mutex_unlock(&ctx->mutex);
@@ -419,11 +394,9 @@ auth_failed:
     if (output != NULL && length > 0)
         mbedtls_platform_zeroize(output, length);
 
-    gcm_zero_free(iv_buf, iv_alloc_len);
     gcm_zero_free(aad_buf, aad_alloc_len);
     gcm_zero_free(plain_buf, data_alloc_len);
     gcm_zero_free(cipher_buf, data_alloc_len);
-    gcm_zero_free(verify_cipher_buf, data_alloc_len);
 
 #if defined(MBEDTLS_THREADING_C)
     mbedtls_mutex_unlock(&ctx->mutex);
@@ -433,11 +406,9 @@ auth_failed:
 
 hw_failed:
 
-    gcm_zero_free(iv_buf, iv_alloc_len);
     gcm_zero_free(aad_buf, aad_alloc_len);
     gcm_zero_free(plain_buf, data_alloc_len);
     gcm_zero_free(cipher_buf, data_alloc_len);
-    gcm_zero_free(verify_cipher_buf, data_alloc_len);
 
 #if defined(MBEDTLS_THREADING_C)
     mbedtls_mutex_unlock(&ctx->mutex);
