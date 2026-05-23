@@ -507,11 +507,6 @@ static void https_server_task(void *argument)
 
         printf("HTTPS client connected\n");
 
-        /* ---- FIX 4 (cont): socket receive timeout -----------------------
-         *
-         * Without a timeout, a client that connects but goes silent stalls
-         * this task indefinitely inside mbedtls_ssl_read / net_recv.
-         * ---------------------------------------------------------------- */
         struct timeval tv_timeout = { .tv_sec = 10, .tv_usec = 0 };
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
                    &tv_timeout, sizeof(tv_timeout));
@@ -525,11 +520,17 @@ static void https_server_task(void *argument)
                             net_recv,
                             NULL);
 
+        uint32_t t0 = HAL_GetTick();
         /* TLS handshake */
         do {
             ret = mbedtls_ssl_handshake(&ssl);
         } while (ret == MBEDTLS_ERR_SSL_WANT_READ  ||
                  ret == MBEDTLS_ERR_SSL_WANT_WRITE);
+        uint32_t t1 = HAL_GetTick();
+        printf("ssl_handshake ret=%d time=%lu ms ciphersuite=%s\r\n",
+            ret,
+            (unsigned long)(t1 - t0),
+            mbedtls_ssl_get_ciphersuite(&ssl));
 
         if (ret != 0)
         {
@@ -551,7 +552,6 @@ static void https_server_task(void *argument)
         {
             rx_buffer[ret] = '\0';
             printf("HTTPS Request:\n%s\n", rx_buffer);
-
             const char *response =
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/plain\r\n"
@@ -559,11 +559,6 @@ static void https_server_task(void *argument)
                 "\r\n"
                 "Hello from STM32 HTTPS server\r\n";
 
-            /* ---- FIX 5: loop mbedtls_ssl_write until all bytes are sent --
-             *
-             * mbedtls_ssl_write may return WANT_WRITE or a partial length.
-             * Without a loop the HTTP response can be silently truncated.
-             * ------------------------------------------------------------ */
             const unsigned char *p   = (const unsigned char *)response;
             size_t               left = strlen(response);
             while (left > 0)
@@ -595,6 +590,19 @@ static void https_server_task(void *argument)
     }
 }
 
+void print_supported_ciphersuites(void)
+{
+    const int *cs = mbedtls_ssl_list_ciphersuites();
+
+    printf("Supported ciphersuites:\r\n");
+
+    while (*cs != 0)
+    {
+        const char *name = mbedtls_ssl_get_ciphersuite_name(*cs);
+        printf("0x%04X : %s\r\n", *cs, name ? name : "unknown");
+        cs++;
+    }
+}
 /* ---------------------------------------------------------------------------
  * Application entry point
  * ---------------------------------------------------------------------------*/
@@ -604,18 +612,7 @@ void main_app(void *arg)
 
     InitLwip();
 
-    unsigned char hash[32];
-    mbedtls_sha256_context test_ctx;
-    mbedtls_sha256_init( &test_ctx );
-    mbedtls_sha256_starts( &test_ctx, 0 );
-    mbedtls_sha256_update( &test_ctx, (const unsigned char*)"abc", 3 );
-    mbedtls_sha256_finish( &test_ctx, hash );
-    mbedtls_sha256_free( &test_ctx );
-    printf("SHA256: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n", 
-           hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7], 
-           hash[8], hash[9], hash[10], hash[11], hash[12], hash[13], hash[14], hash[15], 
-           hash[16], hash[17], hash[18], hash[19], hash[20], hash[21], hash[22], hash[23], 
-           hash[24], hash[25], hash[26], hash[27], hash[28], hash[29], hash[30], hash[31]);
+    print_supported_ciphersuites();
 
     /* ostHTTP  = osThreadNew(http_server_task,  NULL, &osaHTTP);  */
     ostHTTPS = osThreadNew(https_server_task, NULL, &osaHTTPS);

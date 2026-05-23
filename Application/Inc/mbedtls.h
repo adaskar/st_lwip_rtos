@@ -37,6 +37,8 @@
 
 #include "mbedtls/version.h"
 
+#include "mbedtls/ssl_ciphersuites.h"
+
 #if defined(MBEDTLS_MEMORY_BUFFER_ALLOC_C)
 #include "mbedtls/memory_buffer_alloc.h"
 #endif
