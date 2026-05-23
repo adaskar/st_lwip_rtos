@@ -507,11 +507,6 @@ static void https_server_task(void *argument)
 
         printf("HTTPS client connected\n");
 
-        /* ---- FIX 4 (cont): socket receive timeout -----------------------
-         *
-         * Without a timeout, a client that connects but goes silent stalls
-         * this task indefinitely inside mbedtls_ssl_read / net_recv.
-         * ---------------------------------------------------------------- */
         struct timeval tv_timeout = { .tv_sec = 10, .tv_usec = 0 };
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
                    &tv_timeout, sizeof(tv_timeout));
@@ -525,11 +520,17 @@ static void https_server_task(void *argument)
                             net_recv,
                             NULL);
 
+        uint32_t t0 = HAL_GetTick();
         /* TLS handshake */
         do {
             ret = mbedtls_ssl_handshake(&ssl);
         } while (ret == MBEDTLS_ERR_SSL_WANT_READ  ||
                  ret == MBEDTLS_ERR_SSL_WANT_WRITE);
+        uint32_t t1 = HAL_GetTick();
+        printf("ssl_handshake ret=%d time=%lu ms ciphersuite=%s\r\n",
+            ret,
+            (unsigned long)(t1 - t0),
+            mbedtls_ssl_get_ciphersuite(&ssl));
 
         if (ret != 0)
         {
@@ -551,7 +552,6 @@ static void https_server_task(void *argument)
         {
             rx_buffer[ret] = '\0';
             printf("HTTPS Request:\n%s\n", rx_buffer);
-
             const char *response =
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/plain\r\n"
@@ -559,11 +559,6 @@ static void https_server_task(void *argument)
                 "\r\n"
                 "Hello from STM32 HTTPS server\r\n";
 
-            /* ---- FIX 5: loop mbedtls_ssl_write until all bytes are sent --
-             *
-             * mbedtls_ssl_write may return WANT_WRITE or a partial length.
-             * Without a loop the HTTP response can be silently truncated.
-             * ------------------------------------------------------------ */
             const unsigned char *p   = (const unsigned char *)response;
             size_t               left = strlen(response);
             while (left > 0)

@@ -319,18 +319,23 @@ int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
     AES_VALIDATE_RET( mode == MBEDTLS_AES_ENCRYPT ||
                       mode == MBEDTLS_AES_DECRYPT );
 
-    /* allow multi-instance of CRYP use: restore context for CRYP hw module */
-    ctx->hcryp_aes.Instance->CR = ctx->ctx_save_cr;
+#if  defined(HW_CRYPTO_DPA_AES)
+    __HAL_RCC_SAES_CLK_ENABLE();
+#else
+    __HAL_RCC_AES_CLK_ENABLE();
+#endif
 
-    /* Set the Algo if not configured till now */
-    if (CRYP_AES_ECB != ctx->hcryp_aes.Init.Algorithm)
-    {
-        ctx->hcryp_aes.Init.Algorithm  = CRYP_AES_ECB;
+    /*
+     * AES is a shared peripheral. GCM and other CRYP users may have reset the
+     * peripheral or disabled its clock since this AES context was keyed.
+     * Re-initialize here so ECB users such as CTR-DRBG never run with stale
+     * key registers or a disabled peripheral.
+     */
+    ctx->hcryp_aes.Init.Algorithm = CRYP_AES_ECB;
+    if (HAL_CRYP_Init(&ctx->hcryp_aes) != HAL_OK)
+        return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
 
-        /* Configure the CRYP  */
-        if (HAL_CRYP_SetConfig(&ctx->hcryp_aes, &ctx->hcryp_aes.Init) != HAL_OK)
-            return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
-    }
+    ctx->ctx_save_cr = ctx->hcryp_aes.Instance->CR;
 
     if (mode == MBEDTLS_AES_DECRYPT) { /* AES decryption */
         ret = mbedtls_internal_aes_decrypt(ctx, input, output);
