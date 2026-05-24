@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cert.h"
+#include "dashboard_html.h"
 #include "ethernetif.h"
 #include "key.h"
 #include "lwip/netif.h"
@@ -196,9 +197,22 @@ static void InitLwip(void)
  * ---------------------------------------------------------------------------*/
 osThreadId_t ostHTTPS;
 const osThreadAttr_t osaHTTPS = {
-  .name = "HTTPS Server",
+  .name = "Mongoose",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 1024 * 4
+  .stack_size = 1024 * 6
+};
+
+typedef struct
+{
+    const char *name;
+    const char *pin_name;
+    GPIO_TypeDef *port;
+    uint16_t pin;
+} output_t;
+
+static const output_t outputs[] = {
+    { "Output 0", "PB4",  m_OUT_0_GPIO_Port, m_OUT_0_Pin },
+    { "Output 1", "PA15", m_OUT_1_GPIO_Port, m_OUT_1_Pin },
 };
 
 bool mg_random(void *buf, size_t len)
@@ -222,19 +236,153 @@ bool mg_random(void *buf, size_t len)
     return true;
 }
 
+static uint8_t output_get(size_t id)
+{
+    return HAL_GPIO_ReadPin(outputs[id].port, outputs[id].pin) == GPIO_PIN_SET;
+}
+
+static void output_set(size_t id, bool on)
+{
+    HAL_GPIO_WritePin(outputs[id].port,
+                      outputs[id].pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static uint8_t input_get(void)
+{
+    return HAL_GPIO_ReadPin(m_IN_3_GPIO_Port, m_IN_3_Pin) == GPIO_PIN_SET;
+}
+
+static uint32_t uptime_seconds(void)
+{
+    return HAL_GetTick() / 1000U;
+}
+
+static size_t make_state_json(char *buf, size_t len)
+{
+    return (size_t)snprintf(buf,
+                            len,
+                            "{"
+                            "\"uptime\":%lu,"
+                            "\"input\":{\"name\":\"m_IN_3\",\"pin\":\"PA3\",\"active\":%s},"
+                            "\"outputs\":["
+                            "{\"id\":0,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s},"
+                            "{\"id\":1,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s}"
+                            "]"
+                            "}",
+                            (unsigned long)uptime_seconds(),
+                            input_get() ? "true" : "false",
+                            outputs[0].name,
+                            outputs[0].pin_name,
+                            output_get(0) ? "true" : "false",
+                            outputs[1].name,
+                            outputs[1].pin_name,
+                            output_get(1) ? "true" : "false");
+}
+
+static void reply_state(struct mg_connection *c)
+{
+    char json[256];
+    make_state_json(json, sizeof(json));
+    mg_http_reply(c,
+                  200,
+                  "Content-Type: application/json\r\n"
+                  "Cache-Control: no-store\r\n",
+                  "%s",
+                  json);
+}
+
+static void broadcast_state(struct mg_mgr *mgr)
+{
+    char json[256];
+    size_t len = make_state_json(json, sizeof(json));
+    struct mg_connection *conn;
+
+    for (conn = mgr->conns; conn != NULL; conn = conn->next)
+    {
+        if (conn->is_websocket)
+            mg_ws_send(conn, json, len, WEBSOCKET_OP_TEXT);
+    }
+}
+
+static void handle_output_update(struct mg_connection *c,
+                                 struct mg_http_message *hm,
+                                 struct mg_mgr *mgr)
+{
+    long id = mg_json_get_long(hm->body, "$.id", -1);
+    bool on = false;
+
+    if (id < 0 || id >= (long)(sizeof(outputs) / sizeof(outputs[0])) ||
+        !mg_json_get_bool(hm->body, "$.on", &on))
+    {
+        mg_http_reply(c,
+                      400,
+                      "Content-Type: application/json\r\n",
+                      "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}\n");
+        return;
+    }
+
+    output_set((size_t)id, on);
+    reply_state(c);
+    broadcast_state(mgr);
+}
+
+static void start_tls(struct mg_connection *c)
+{
+    struct mg_tls_opts opts;
+    uint32_t handshake_start = HAL_GetTick();
+
+    memset(&opts, 0, sizeof(opts));
+    opts.cert = mg_str((const char *)cert_pem);
+    opts.key = mg_str((const char *)key_pem);
+    memcpy(c->data, &handshake_start, sizeof(handshake_start));
+    printf("HTTPS client connected\r\n");
+    mg_tls_init(c, &opts);
+}
+
+static void redirect_to_https(struct mg_connection *c, struct mg_http_message *hm)
+{
+    struct mg_str *host = mg_http_get_header(hm, "Host");
+    char location[160];
+    size_t host_len = host == NULL ? 14 : host->len;
+    const char *host_ptr = host == NULL ? "192.168.100.10" : host->buf;
+    size_t i;
+
+    for (i = 0; i < host_len; i++)
+    {
+        if (host_ptr[i] == ':')
+        {
+            host_len = i;
+            break;
+        }
+    }
+
+    mg_snprintf(location,
+                sizeof(location),
+                "Location: https://%.*s%.*s\r\n"
+                "Connection: close\r\n",
+                (int)host_len,
+                host_ptr,
+                (int)hm->uri.len,
+                hm->uri.buf);
+
+    mg_http_reply(c,
+                  301,
+                  location,
+                  "Redirecting to HTTPS\n");
+    c->is_draining = 1;
+}
+
+static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data)
+{
+    if (ev == MG_EV_HTTP_MSG)
+        redirect_to_https(c, (struct mg_http_message *)ev_data);
+}
+
 static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 {
     if (ev == MG_EV_ACCEPT && c->is_tls)
-    {
-        struct mg_tls_opts opts;
-        uint32_t handshake_start = HAL_GetTick();
-        memset(&opts, 0, sizeof(opts));
-        opts.cert = mg_str((const char *)cert_pem);
-        opts.key = mg_str((const char *)key_pem);
-        memcpy(c->data, &handshake_start, sizeof(handshake_start));
-        printf("HTTPS client connected\r\n");
-        mg_tls_init(c, &opts);
-    }
+        start_tls(c);
     else if (ev == MG_EV_TLS_HS)
     {
         uint32_t handshake_start;
@@ -251,12 +399,50 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         printf("HTTPS request received: %lu bytes\r\n",
                (unsigned long)hm->message.len);
 
-        mg_http_reply(c,
-                      200,
-                      "Content-Type: text/plain\r\n"
-                      "Connection: close\r\n",
-                      "Hello from Mongoose HTTPS server\r\n");
-        c->is_draining = 1;
+        if (mg_match(hm->uri, mg_str("/"), NULL))
+        {
+            mg_http_reply(c,
+                          200,
+                          "Content-Type: text/html; charset=utf-8\r\n"
+                          "Cache-Control: no-store\r\n",
+                          "%s",
+                          dashboard_html);
+        }
+        else if (mg_match(hm->uri, mg_str("/api/state"), NULL))
+        {
+            reply_state(c);
+        }
+        else if (mg_match(hm->uri, mg_str("/api/output"), NULL))
+        {
+            handle_output_update(c, hm, c->mgr);
+        }
+        else if (mg_match(hm->uri, mg_str("/ws"), NULL))
+        {
+            mg_ws_upgrade(c, hm, NULL);
+        }
+        else
+        {
+            mg_http_reply(c,
+                          404,
+                          "Content-Type: application/json\r\n",
+                          "{\"error\":\"not found\"}\n");
+        }
+    }
+    else if (ev == MG_EV_WS_OPEN)
+    {
+        char json[256];
+        size_t len = make_state_json(json, sizeof(json));
+        mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
+    }
+    else if (ev == MG_EV_WS_MSG)
+    {
+        struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
+        if (mg_match(wm->data, mg_str("state"), NULL))
+        {
+            char json[256];
+            size_t len = make_state_json(json, sizeof(json));
+            mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
+        }
     }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
     {
@@ -267,6 +453,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 static void https_server_task(void *argument)
 {
     struct mg_mgr mgr;
+    uint32_t last_broadcast = 0;
 
     (void)argument;
 
@@ -278,6 +465,13 @@ static void https_server_task(void *argument)
     mg_log_set(MG_LL_INFO);
     mg_mgr_init(&mgr);
 
+    if (mg_http_listen(&mgr, "http://0.0.0.0:80", http_ev_handler, NULL) == NULL)
+    {
+        printf("Mongoose HTTP listen failed\r\n");
+        for (;;)
+            osDelay(1000);
+    }
+
     if (mg_http_listen(&mgr, "https://0.0.0.0:443", https_ev_handler, NULL) == NULL)
     {
         printf("Mongoose HTTPS listen failed\r\n");
@@ -288,7 +482,15 @@ static void https_server_task(void *argument)
     printf("Mongoose v%s HTTPS server listening on port 443\r\n", MG_VERSION);
 
     for (;;)
+    {
         mg_mgr_poll(&mgr, 50);
+
+        if (HAL_GetTick() - last_broadcast >= 1000U)
+        {
+            last_broadcast = HAL_GetTick();
+            broadcast_state(&mgr);
+        }
+    }
 }
 /* ---------------------------------------------------------------------------
  * Application entry point
