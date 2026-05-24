@@ -255,7 +255,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                       200,
                       "Content-Type: text/plain\r\n"
                       "Connection: close\r\n",
-                      "Hello from STM32 HTTPS server\r\n");
+                      "Hello from Mongoose HTTPS server\r\n");
         c->is_draining = 1;
     }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
