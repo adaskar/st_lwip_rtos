@@ -1,17 +1,19 @@
 #include "main.h"
 #include <stdio.h>
 #include <string.h>
-#include "mbedtls.h"
 
+#include "cert.h"
 #include "ethernetif.h"
+#include "key.h"
 #include "lwip/netif.h"
 #include "lwip/ip_addr.h"
 #include "lwip/tcpip.h"
 #include "lwip/dhcp.h"
 #include "lwip/netifapi.h"
-#include "lwip/sockets.h"
+#include "mongoose.h"
 
 extern UART_HandleTypeDef huart3;
+extern RNG_HandleTypeDef hrng;
 
 int _write(int fd, unsigned char *buf, int len)
 {
@@ -190,74 +192,7 @@ static void InitLwip(void)
 }
 
 /* ---------------------------------------------------------------------------
- * Plain HTTP server (port 80) — unchanged, kept for reference
- * ---------------------------------------------------------------------------*/
-osThreadId_t ostHTTP;
-const osThreadAttr_t osaHTTP = {
-  .name = "HTTP Server",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 1024 * 4
-};
-
-void http_server_task(void *argument)
-{
-    while (gnetif.ip_addr.addr == 0)
-        osDelay(100);
-
-    printf("Network ready\n");
-
-    int server_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (server_fd < 0)
-    {
-        printf("Socket failed\n");
-        for (;;) osDelay(1000);
-    }
-
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(80);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-    {
-        printf("Bind failed\n");
-        closesocket(server_fd);
-        for (;;) osDelay(1000);
-    }
-
-    listen(server_fd, 5);
-    printf("HTTP server started\n");
-
-    while (1)
-    {
-        int client = accept(server_fd, NULL, NULL);
-        if (client >= 0)
-        {
-            char buffer[1024];
-            int len = recv(client, buffer, sizeof(buffer) - 1, 0);
-            if (len > 0)
-            {
-                buffer[len] = 0;
-                printf("%s\n", buffer);
-                const char *resp =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                    "STM32 HTTP SERVER\r\n";
-                send(client, resp, strlen(resp), 0);
-            }
-            closesocket(client);
-        }
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * HTTPS server (port 443)
+ * HTTPS server (port 443), backed by Mongoose + lwIP sockets + mbedTLS
  * ---------------------------------------------------------------------------*/
 osThreadId_t ostHTTPS;
 const osThreadAttr_t osaHTTPS = {
@@ -266,342 +201,94 @@ const osThreadAttr_t osaHTTPS = {
   .stack_size = 1024 * 4
 };
 
-#include "cert.h"
-#include "key.h"
-#include "mbedtls/debug.h"
-
-/* ---- FIX 3: mbedtls contexts as file-static, NOT on the task stack --------
- *
- * mbedtls_ssl_context alone is several hundred bytes; together with the
- * config, certs, RSA key and entropy objects they easily exceed a few KB.
- * More critically, during RSA-2048 decryption (ClientKeyExchange) mbedtls
- * needs substantial additional call-stack depth.  Keeping all of these on
- * the task stack risks silent stack overflow that corrupts session-key
- * material and causes exactly the MAC failure observed in ssl_decrypt_buf.
- * --------------------------------------------------------------------- */
-static mbedtls_ssl_context    ssl;
-static mbedtls_ssl_config     conf;
-static mbedtls_x509_crt       srvcert;
-static mbedtls_pk_context     pkey;
-static mbedtls_entropy_context entropy;
-static mbedtls_ctr_drbg_context ctr_drbg;
-
-// static void my_debug(void *ctx, int level,
-//                      const char *file, int line,
-//                      const char *str)
-// {
-//     (void)ctx;
-//     (void)level;
-//     printf("%s:%04d: %s", file, line, str);
-// }
-
-/* Error code aliases (not always exposed in lwIP build) */
-#ifndef MBEDTLS_ERR_NET_CONN_RESET
-#define MBEDTLS_ERR_NET_CONN_RESET  -0x0050
-#endif
-#ifndef MBEDTLS_ERR_NET_SEND_FAILED
-#define MBEDTLS_ERR_NET_SEND_FAILED -0x004E
-#endif
-#ifndef MBEDTLS_ERR_NET_RECV_FAILED
-#define MBEDTLS_ERR_NET_RECV_FAILED -0x004C
-#endif
-
-static int net_send(void *ctx, const unsigned char *buf, size_t len)
+bool mg_random(void *buf, size_t len)
 {
-    int fd  = *(int *)ctx;
-    int ret = send(fd, buf, len, 0);
-    if (ret < 0)
+    uint8_t *p = (uint8_t *)buf;
+
+    while (len > 0)
     {
-        int err = errno;
-        printf("[net_send] send failed: ret=%d errno=%d\n", ret, err);
-        if (err == EWOULDBLOCK || err == EAGAIN)
-            return MBEDTLS_ERR_SSL_WANT_WRITE;
-        if (err == EPIPE || err == ECONNRESET)
-            return MBEDTLS_ERR_NET_CONN_RESET;
-        return MBEDTLS_ERR_NET_SEND_FAILED;
+        uint32_t random_word;
+        size_t chunk;
+
+        if (HAL_RNG_GenerateRandomNumber(&hrng, &random_word) != HAL_OK)
+            return false;
+
+        chunk = len < sizeof(random_word) ? len : sizeof(random_word);
+        memcpy(p, &random_word, chunk);
+        p += chunk;
+        len -= chunk;
     }
-    return ret;
+
+    return true;
 }
 
-static int net_recv(void *ctx, unsigned char *buf, size_t len)
+static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 {
-    int fd  = *(int *)ctx;
-    int ret = recv(fd, buf, len, 0);
-    if (ret < 0)
+    if (ev == MG_EV_ACCEPT && c->is_tls)
     {
-        int err = errno;
-        printf("[net_recv] recv failed: ret=%d errno=%d\n", ret, err);
-        if (err == EWOULDBLOCK || err == EAGAIN)
-            return MBEDTLS_ERR_SSL_WANT_READ;
-        if (err == EPIPE || err == ECONNRESET)
-            return MBEDTLS_ERR_NET_CONN_RESET;
-        return MBEDTLS_ERR_NET_RECV_FAILED;
+        struct mg_tls_opts opts;
+        uint32_t handshake_start = HAL_GetTick();
+        memset(&opts, 0, sizeof(opts));
+        opts.cert = mg_str((const char *)cert_pem);
+        opts.key = mg_str((const char *)key_pem);
+        memcpy(c->data, &handshake_start, sizeof(handshake_start));
+        printf("HTTPS client connected\r\n");
+        mg_tls_init(c, &opts);
     }
-
-    /* ---- FIX 2: ret == 0 means the peer closed its write side (EOF). ------
-     *
-     * Returning 0 to mbedtls is interpreted as "no data yet", not "closed".
-     * This can corrupt the handshake state machine and cause ssl_decrypt_buf
-     * to fail with a MAC error on the very next encrypted record it tries to
-     * read (e.g. the client's Finished message).
-     * -------------------------------------------------------------------- */
-    if (ret == 0)
+    else if (ev == MG_EV_TLS_HS)
     {
-        printf("[net_recv] connection closed by peer (EOF)\n");
-        return MBEDTLS_ERR_NET_CONN_RESET;
+        uint32_t handshake_start;
+        struct mg_tls *tls = (struct mg_tls *)c->tls;
+        memcpy(&handshake_start, c->data, sizeof(handshake_start));
+        printf("TLS handshake OK time=%lu ms cipher: %s\r\n",
+               (unsigned long)(HAL_GetTick() - handshake_start),
+               mbedtls_ssl_get_ciphersuite(&tls->ssl));
     }
+    else if (ev == MG_EV_HTTP_MSG)
+    {
+        struct mg_http_message *hm = (struct mg_http_message *)ev_data;
 
-    return ret;
+        printf("HTTPS request received: %lu bytes\r\n",
+               (unsigned long)hm->message.len);
+
+        mg_http_reply(c,
+                      200,
+                      "Content-Type: text/plain\r\n"
+                      "Connection: close\r\n",
+                      "Hello from STM32 HTTPS server\r\n");
+        c->is_draining = 1;
+    }
+    else if (ev == MG_EV_CLOSE && c->is_accepted)
+    {
+        printf("HTTPS client disconnected\r\n");
+    }
 }
 
 static void https_server_task(void *argument)
 {
+    struct mg_mgr mgr;
+
     (void)argument;
 
-    int server_fd;
-    int client_fd;
-    struct sockaddr_in server_addr;
+    while (gnetif.ip_addr.addr == 0)
+        osDelay(100);
 
-    /* -----------------------------------------------------------------------
-     * One-time mbedtls initialisation (run once before the accept loop)
-     * -------------------------------------------------------------------- */
-    mbedtls_ssl_init(&ssl);
-    mbedtls_ssl_config_init(&conf);
-    mbedtls_x509_crt_init(&srvcert);
-    mbedtls_pk_init(&pkey);
-    mbedtls_entropy_init(&entropy);
-    mbedtls_ctr_drbg_init(&ctr_drbg);
+    printf("Network ready\r\n");
 
-    /* --- Entropy / DRBG -------------------------------------------------- */
-    extern int mbedtls_hardware_poll(void *data, unsigned char *output,
-                                     size_t len, size_t *olen);
-#if !defined(MBEDTLS_ENTROPY_MIN_HARDWARE)
-#define MBEDTLS_ENTROPY_MIN_HARDWARE 32
-#endif
-    int ret = mbedtls_entropy_add_source(&entropy,
-                                         mbedtls_hardware_poll,
-                                         NULL,
-                                         MBEDTLS_ENTROPY_MIN_HARDWARE,
-                                         MBEDTLS_ENTROPY_SOURCE_STRONG);
-    if (ret != 0)
+    mg_log_set(MG_LL_INFO);
+    mg_mgr_init(&mgr);
+
+    if (mg_http_listen(&mgr, "https://0.0.0.0:443", https_ev_handler, NULL) == NULL)
     {
-        printf("entropy_add_source failed: -0x%04X\n", (unsigned int)-ret);
-        return;
+        printf("Mongoose HTTPS listen failed\r\n");
+        for (;;)
+            osDelay(1000);
     }
 
-    ret = mbedtls_ctr_drbg_seed(&ctr_drbg,
-                                 mbedtls_entropy_func,
-                                 &entropy,
-                                 (const unsigned char *)"stm32_https",
-                                 11);
-    if (ret != 0)
-    {
-        printf("DRBG seed failed: -0x%04X\n", (unsigned int)-ret);
-        return;
-    }
+    printf("Mongoose v%s HTTPS server listening on port 443\r\n", MG_VERSION);
 
-    /* --- Certificate & key ----------------------------------------------- */
-    ret = mbedtls_x509_crt_parse(&srvcert,
-                                  (const unsigned char *)cert_pem,
-                                  cert_pem_len);
-    if (ret != 0)
-    {
-        printf("Certificate parse failed: -0x%04X\n", (unsigned int)-ret);
-        return;
-    }
-
-    ret = mbedtls_pk_parse_key(&pkey,
-                                (const unsigned char *)key_pem,
-                                key_pem_len,
-                                NULL, 0,
-                                mbedtls_ctr_drbg_random,
-                                &ctr_drbg);
-    if (ret != 0)
-    {
-        printf("Key parse failed: -0x%04X\n", (unsigned int)-ret);
-        return;
-    }
-
-    /* ---- FIX 1: call config_defaults FIRST, then apply all settings. ------
-     *
-     * mbedtls_ssl_config_defaults() resets the conf struct to preset values,
-     * overwriting anything written before it.  Previously authmode was set
-     * on a zero-initialised struct and then silently discarded when
-     * config_defaults ran.  Now every option is set in the correct order.
-     * -------------------------------------------------------------------- */
-    ret = mbedtls_ssl_config_defaults(&conf,
-                                       MBEDTLS_SSL_IS_SERVER,
-                                       MBEDTLS_SSL_TRANSPORT_STREAM,
-                                       MBEDTLS_SSL_PRESET_DEFAULT);
-    if (ret != 0)
-    {
-        printf("ssl_config_defaults failed: -0x%04X\n", (unsigned int)-ret);
-        return;
-    }
-
-    /* Now set options — everything here is applied AFTER defaults */
-    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
-
-    mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-
-    /* Set threshold to 1 during debugging to see handshake progress.
-     * Set to 0 in production to silence the output.                   */
-    // mbedtls_debug_set_threshold(1);
-    // mbedtls_ssl_conf_dbg(&conf, my_debug, NULL);
-
-    ret = mbedtls_ssl_conf_own_cert(&conf, &srvcert, &pkey);
-    if (ret != 0)
-    {
-        printf("ssl_conf_own_cert failed: -0x%04X\n", (unsigned int)-ret);
-        return;
-    }
-
-    ret = mbedtls_ssl_setup(&ssl, &conf);
-    if (ret != 0)
-    {
-        printf("ssl_setup failed: -0x%04X\n", (unsigned int)-ret);
-        return;
-    }
-
-    /* --- Listening socket ------------------------------------------------- */
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0)
-    {
-        printf("HTTPS socket failed\n");
-        return;
-    }
-
-    /* ---- FIX 4: SO_REUSEADDR so bind succeeds after a device reset ------*/
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family      = AF_INET;
-    server_addr.sin_port        = htons(443);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
-    {
-        printf("HTTPS bind failed\n");
-        closesocket(server_fd);
-        return;
-    }
-
-    if (listen(server_fd, 5) < 0)
-    {
-        printf("HTTPS listen failed\n");
-        closesocket(server_fd);
-        return;
-    }
-
-    printf("HTTPS server listening on port 443\n");
-
-    /* -----------------------------------------------------------------------
-     * Accept loop
-     * -------------------------------------------------------------------- */
-    while (1)
-    {
-        client_fd = accept(server_fd, NULL, NULL);
-        if (client_fd < 0)
-            continue;
-
-        printf("HTTPS client connected\n");
-
-        struct timeval tv_timeout = { .tv_sec = 10, .tv_usec = 0 };
-        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
-                   &tv_timeout, sizeof(tv_timeout));
-
-        /* Reset the ssl context for this new connection */
-        mbedtls_ssl_session_reset(&ssl);
-
-        mbedtls_ssl_set_bio(&ssl,
-                            &client_fd,
-                            net_send,
-                            net_recv,
-                            NULL);
-
-        uint32_t t0 = HAL_GetTick();
-        /* TLS handshake */
-        do {
-            ret = mbedtls_ssl_handshake(&ssl);
-        } while (ret == MBEDTLS_ERR_SSL_WANT_READ  ||
-                 ret == MBEDTLS_ERR_SSL_WANT_WRITE);
-        uint32_t t1 = HAL_GetTick();
-        printf("ssl_handshake ret=%d time=%lu ms ciphersuite=%s\r\n",
-            ret,
-            (unsigned long)(t1 - t0),
-            mbedtls_ssl_get_ciphersuite(&ssl));
-
-        if (ret != 0)
-        {
-            printf("TLS handshake failed: -0x%04X\n", (unsigned int)-ret);
-            mbedtls_ssl_close_notify(&ssl);
-            closesocket(client_fd);
-            continue;
-        }
-
-        printf("TLS handshake OK  cipher: %s\n",
-               mbedtls_ssl_get_ciphersuite(&ssl));
-
-        /* Read HTTP request */
-        char rx_buffer[1024];
-        ret = mbedtls_ssl_read(&ssl,
-                               (unsigned char *)rx_buffer,
-                               sizeof(rx_buffer) - 1);
-        if (ret > 0)
-        {
-            rx_buffer[ret] = '\0';
-            printf("HTTPS Request:\n%s\n", rx_buffer);
-            const char *response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Hello from STM32 HTTPS server\r\n";
-
-            const unsigned char *p   = (const unsigned char *)response;
-            size_t               left = strlen(response);
-            while (left > 0)
-            {
-                ret = mbedtls_ssl_write(&ssl, p, left);
-                if (ret == MBEDTLS_ERR_SSL_WANT_WRITE)
-                    continue;
-                if (ret <= 0)
-                {
-                    printf("ssl_write failed: -0x%04X\n", (unsigned int)-ret);
-                    break;
-                }
-                p    += ret;
-                left -= ret;
-            }
-        }
-        else if (ret == 0)
-        {
-            printf("Connection closed by client before request\n");
-        }
-        else
-        {
-            printf("ssl_read failed: -0x%04X\n", (unsigned int)-ret);
-        }
-
-        mbedtls_ssl_close_notify(&ssl);
-        closesocket(client_fd);
-        printf("HTTPS client disconnected\n");
-    }
-}
-
-void print_supported_ciphersuites(void)
-{
-    const int *cs = mbedtls_ssl_list_ciphersuites();
-
-    printf("Supported ciphersuites:\r\n");
-
-    while (*cs != 0)
-    {
-        const char *name = mbedtls_ssl_get_ciphersuite_name(*cs);
-        printf("0x%04X : %s\r\n", *cs, name ? name : "unknown");
-        cs++;
-    }
+    for (;;)
+        mg_mgr_poll(&mgr, 50);
 }
 /* ---------------------------------------------------------------------------
  * Application entry point
@@ -612,9 +299,6 @@ void main_app(void *arg)
 
     InitLwip();
 
-    print_supported_ciphersuites();
-
-    /* ostHTTP  = osThreadNew(http_server_task,  NULL, &osaHTTP);  */
     ostHTTPS = osThreadNew(https_server_task, NULL, &osaHTTPS);
 
     while (1)

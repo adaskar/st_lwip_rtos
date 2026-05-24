@@ -7,3 +7,6 @@
 [submodule "Custom_Middlewares/Third_Party/mbedtls/stm32-mw-mbedtls"]
 	path = Custom_Middlewares/Third_Party/mbedtls/stm32-mw-mbedtls
 	url = https://github.com/STMicroelectronics/stm32-mw-mbedtls.git
+[submodule "Custom_Middlewares/Third_Party/mongoose/mongoose"]
+	path = Custom_Middlewares/Third_Party/mongoose/mongoose
+	url = https://github.com/cesanta/mongoose.git

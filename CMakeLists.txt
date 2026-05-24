@@ -47,6 +47,10 @@ add_subdirectory(Custom_Middlewares/Third_Party/lwip)
 
 # Add mbedTLS middleware
 add_subdirectory(Custom_Middlewares/Third_Party/mbedtls)
+
+# Add Mongoose middleware
+add_subdirectory(Custom_Middlewares/Third_Party/mongoose)
+
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
