@@ -67,7 +67,9 @@
 /* ================= MEMP OPTIONS =========================== */
 /* ========================================================= */
 
-#define MEMP_NUM_TCP_PCB               10
+#define MEMP_NUM_TCP_PCB               16
+
+#define MEMP_NUM_TCP_PCB_LISTEN        32
 
 /*
  * HTTPS requires more queued TCP segments.
@@ -142,7 +144,7 @@
 /* ================= SOCKET OPTIONS ========================= */
 /* ========================================================= */
 
-#define LWIP_NETCONN                   0
+#define LWIP_NETCONN                   1
 #define LWIP_SOCKET                    1
 
 /*
@@ -264,6 +266,9 @@
 #define DEFAULT_UDP_RECVMBOX_SIZE      16
 #define DEFAULT_TCP_RECVMBOX_SIZE      16
 #define DEFAULT_ACCEPTMBOX_SIZE        16
+
+#define TCP_LISTEN_BACKLOG 1
+#define TCP_DEFAULT_LISTEN_BACKLOG 128
 
 /*
  * Default worker stack.
