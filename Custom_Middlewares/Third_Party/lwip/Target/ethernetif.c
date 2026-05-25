@@ -112,8 +112,10 @@ osSemaphoreId_t RxPktSemaphore = NULL; /* Semaphore to signal incoming packets *
 
 osSemaphoreId_t TxPktSemaphore = NULL;   /* Semaphore to signal transmit packet complete */
 
-/* Global Ethernet handle */
-ETH_HandleTypeDef EthHandle;
+/* Use the CubeMX Ethernet handle. The IRQ handler also uses heth, so lwIP and
+ * HAL must operate on the same descriptor lists and state. */
+extern ETH_HandleTypeDef heth;
+#define EthHandle heth
 
 /* Private function prototypes -----------------------------------------------*/
 static void ethernetif_input( void *argument );
