@@ -55,8 +55,8 @@
 
 #define ETH_DMA_TRANSMIT_TIMEOUT                (20U)
 
-#define ETH_RX_BUFFER_SIZE            1000U
-#define ETH_RX_BUFFER_CNT             12U
+#define ETH_RX_BUFFER_SIZE            1536U
+#define ETH_RX_BUFFER_CNT             16U
 #define ETH_TX_BUFFER_MAX             ((ETH_TX_DESC_CNT) * 2U)
 
 /* Private macro -------------------------------------------------------------*/
@@ -763,5 +763,3 @@ void HAL_ETH_TxFreeCallback(uint32_t * buff)
 {
   pbuf_free((struct pbuf *)buff);
 }
-
-

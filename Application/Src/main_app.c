@@ -642,7 +642,16 @@ static void broadcast_state(struct mg_mgr *mgr)
 
     for (conn = mgr->conns; conn != NULL; conn = conn->next)
     {
-        if (conn->is_websocket)
+        if (!conn->is_websocket)
+            continue;
+
+        if (conn->send.len > WS_MAX_SEND_QUEUE)
+        {
+            conn->is_closing = 1;
+            continue;
+        }
+
+        if (conn->send.len == 0)
             mg_ws_send(conn, json, len, WEBSOCKET_OP_TEXT);
     }
 }
@@ -966,7 +975,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             if (elapsed_since(state->last_ws_ping_at) >= WS_PING_INTERVAL_MS)
             {
                 state->last_ws_ping_at = HAL_GetTick();
-                mg_ws_send(c, "", 0, WEBSOCKET_OP_PING);
+                if (c->send.len == 0)
+                    mg_ws_send(c, "", 0, WEBSOCKET_OP_PING);
             }
 
             if (c->send.len > WS_MAX_SEND_QUEUE)
