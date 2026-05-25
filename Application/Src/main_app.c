@@ -379,6 +379,17 @@ static uint32_t elapsed_since(uint32_t since)
     return HAL_GetTick() - since;
 }
 
+static bool http_connection_is_idle(struct mg_connection *c,
+                                    const conn_state_t *state)
+{
+    return !c->is_websocket &&
+           !c->is_tls_hs &&
+           !c->is_resp &&
+           c->pfn_data == NULL &&
+           c->send.len == 0 &&
+           elapsed_since(state->last_activity_at) > HTTP_KEEPALIVE_TIMEOUT_MS;
+}
+
 static void mongoose_log_filter(char ch, void *param)
 {
     static char line[160];
@@ -987,9 +998,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             c->is_closing = 1;
         }
-        else if (elapsed_since(state->last_activity_at) > HTTP_KEEPALIVE_TIMEOUT_MS)
+        else if (http_connection_is_idle(c, state))
         {
-            c->is_closing = 1;
+            c->is_draining = 1;
         }
     }
 }
