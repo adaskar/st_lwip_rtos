@@ -179,6 +179,12 @@
   }
 
   async function updateOutput(id, on) {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ id: id, on: on }));
+      log("Output " + id + " set " + (on ? "on" : "off"));
+      return;
+    }
+
     try {
       const response = await api("/api/output", {
         method: "POST",

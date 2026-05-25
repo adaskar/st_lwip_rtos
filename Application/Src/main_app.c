@@ -279,9 +279,9 @@ static const output_t outputs[] = {
 };
 
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
+#define HTTP_KEEPALIVE_TIMEOUT_MS 5000U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_MAX_SEND_QUEUE        4096U
-#define HTTP_STATIC_LINGER_MS    100U
 #define LOGIN_PASSWORD           "1071"
 #define AUTH_COOKIE              "st_auth=1071"
 #define AUTH_TOKEN               "1071"
@@ -291,9 +291,7 @@ typedef struct
     uint32_t handshake_started_at;
     uint32_t last_activity_at;
     uint32_t last_ws_ping_at;
-    uint32_t close_after_response_at;
     bool authenticated;
-    bool close_after_response;
 } conn_state_t;
 
 bool mg_random(void *buf, size_t len)
@@ -376,23 +374,6 @@ static void mark_conn_activity(struct mg_connection *c)
     conn_state(c)->last_activity_at = HAL_GetTick();
 }
 
-static void close_static_when_drained(struct mg_connection *c)
-{
-    conn_state_t *state = conn_state(c);
-
-    if (!state->close_after_response ||
-        c->pfn_data != NULL ||
-        c->is_resp ||
-        c->send.len != 0 ||
-        (int32_t)(HAL_GetTick() - state->close_after_response_at) < 0)
-    {
-        return;
-    }
-
-    state->close_after_response = false;
-    c->is_draining = 1;
-}
-
 static uint32_t elapsed_since(uint32_t since)
 {
     return HAL_GetTick() - since;
@@ -464,10 +445,8 @@ static void reply_unauthorized(struct mg_connection *c)
     mg_http_reply(c,
                   401,
                   "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
+                  "Cache-Control: no-store\r\n",
                   "{\"error\":\"unauthorized\"}\n");
-    c->is_draining = 1;
 }
 
 static bool uri_has_prefix(struct mg_str uri, const char *prefix)
@@ -484,11 +463,9 @@ static void redirect_to_path(struct mg_connection *c, const char *path)
     mg_snprintf(headers,
                 sizeof(headers),
                 "Location: %s\r\n"
-                "Cache-Control: no-store\r\n"
-                "Connection: close\r\n",
+                "Cache-Control: no-store\r\n",
                 path);
     mg_http_reply(c, 303, headers, "");
-    c->is_draining = 1;
 }
 
 static bool uri_contains_dotdot(struct mg_str uri)
@@ -512,17 +489,13 @@ static void serve_web_file(struct mg_connection *c,
     struct mg_http_serve_opts opts = {
         .root_dir = "/web_root",
         .extra_headers = no_store ?
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n" :
-            "Cache-Control: no-cache\r\n"
-            "Connection: close\r\n",
+            "Cache-Control: no-store\r\n" :
+            "Cache-Control: no-cache\r\n",
         .fs = &mg_fs_packed,
     };
 
     mg_mem_files = mg_packed_files;
     mg_http_serve_file(c, hm, path, &opts);
-    conn_state(c)->close_after_response = true;
-    conn_state(c)->close_after_response_at = HAL_GetTick() + HTTP_STATIC_LINGER_MS;
 }
 
 static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
@@ -539,10 +512,8 @@ static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
         mg_http_reply(c,
                       400,
                       "Content-Type: text/plain; charset=utf-8\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n",
+                      "Cache-Control: no-store\r\n",
                       "bad request\n");
-        c->is_draining = 1;
         return;
     }
 
@@ -563,20 +534,16 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
                       200,
                       "Content-Type: application/json\r\n"
                       "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n"
                       "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
                       "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}\n");
-        c->is_draining = 1;
     }
     else
     {
         mg_http_reply(c,
                       403,
                       "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n",
+                      "Cache-Control: no-store\r\n",
                       "{\"error\":\"bad password\"}\n");
-        c->is_draining = 1;
     }
 }
 
@@ -586,10 +553,8 @@ static void handle_logout(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n"
                   "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
                   "{\"ok\":true}\n");
-    c->is_draining = 1;
 }
 
 static size_t make_state_json(char *buf, size_t len)
@@ -653,10 +618,8 @@ static void reply_state(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
                   "%s",
                   json);
-    c->is_draining = 1;
 }
 
 static void reply_network(struct mg_connection *c)
@@ -667,10 +630,8 @@ static void reply_network(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
                   "%s",
                   json);
-    c->is_draining = 1;
 }
 
 static void broadcast_state(struct mg_mgr *mgr)
@@ -699,10 +660,8 @@ static void handle_output_update(struct mg_connection *c,
         mg_http_reply(c,
                       400,
                       "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n",
+                      "Cache-Control: no-store\r\n",
                       "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}\n");
-        c->is_draining = 1;
         return;
     }
 
@@ -803,8 +762,7 @@ static void redirect_to_https(struct mg_connection *c, struct mg_http_message *h
 
     mg_snprintf(location,
                 sizeof(location),
-                "Location: https://%.*s%.*s\r\n"
-                "Connection: close\r\n",
+                "Location: https://%.*s%.*s\r\n",
                 (int)host_len,
                 host_ptr,
                 (int)hm->uri.len,
@@ -814,7 +772,6 @@ static void redirect_to_https(struct mg_connection *c, struct mg_http_message *h
                   301,
                   location,
                   "Redirecting to HTTPS\n");
-    c->is_draining = 1;
 }
 
 static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data)
@@ -881,10 +838,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             mg_http_reply(c,
                           204,
-                          "Cache-Control: max-age=86400\r\n"
-                          "Connection: close\r\n",
+                          "Cache-Control: max-age=86400\r\n",
                           "");
-            c->is_draining = 1;
         }
         else if (!authed)
         {
@@ -927,10 +882,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                     mg_http_reply(c,
                                   400,
                                   "Content-Type: application/json\r\n"
-                                  "Cache-Control: no-store\r\n"
-                                  "Connection: close\r\n",
+                                  "Cache-Control: no-store\r\n",
                                   "{\"error\":\"invalid network config\"}\n");
-                    c->is_draining = 1;
                     return;
                 }
             }
@@ -946,10 +899,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             mg_http_reply(c,
                           404,
                           "Content-Type: application/json\r\n"
-                          "Cache-Control: no-store\r\n"
-                          "Connection: close\r\n",
+                          "Cache-Control: no-store\r\n",
                           "{\"error\":\"not found\"}\n");
-            c->is_draining = 1;
         }
     }
     else if (ev == MG_EV_WS_OPEN)
@@ -993,10 +944,6 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     {
         mark_conn_activity(c);
     }
-    else if (ev == MG_EV_WRITE && c->is_accepted && !c->is_websocket)
-    {
-        close_static_when_drained(c);
-    }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
     {
         conn_state_t *state = conn_state(c);
@@ -1025,13 +972,12 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             if (c->send.len > WS_MAX_SEND_QUEUE)
                 c->is_closing = 1;
         }
-        else if (state->close_after_response &&
-                 c->send.len == 0)
-        {
-            close_static_when_drained(c);
-        }
         else if (c->is_tls_hs &&
                  elapsed_since(state->handshake_started_at) > TLS_HANDSHAKE_TIMEOUT_MS)
+        {
+            c->is_closing = 1;
+        }
+        else if (elapsed_since(state->last_activity_at) > HTTP_KEEPALIVE_TIMEOUT_MS)
         {
             c->is_closing = 1;
         }
