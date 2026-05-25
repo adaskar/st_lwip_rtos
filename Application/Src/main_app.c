@@ -239,6 +239,7 @@ static const output_t outputs[] = {
 #define WS_MAX_SEND_QUEUE        4096U
 #define LOGIN_PASSWORD           "1071"
 #define AUTH_COOKIE              "st_auth=1071"
+#define AUTH_TOKEN               "1071"
 
 typedef struct
 {
@@ -363,9 +364,24 @@ static void mongoose_log_filter(char ch, void *param)
 static bool request_is_authenticated(struct mg_http_message *hm)
 {
     struct mg_str *cookie = mg_http_get_header(hm, "Cookie");
+    struct mg_str *header = mg_http_get_header(hm, "X-ST-Auth");
     const char *needle = AUTH_COOKIE;
     size_t needle_len = strlen(needle);
     size_t i;
+    char token[16];
+
+    if (header != NULL &&
+        header->len == strlen(AUTH_TOKEN) &&
+        memcmp(header->buf, AUTH_TOKEN, header->len) == 0)
+    {
+        return true;
+    }
+
+    if (mg_http_get_var(&hm->query, "token", token, sizeof(token)) > 0 &&
+        strcmp(token, AUTH_TOKEN) == 0)
+    {
+        return true;
+    }
 
     if (cookie == NULL || cookie->len < needle_len)
         return false;
@@ -403,7 +419,7 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
                       "Content-Type: application/json\r\n"
                       "Cache-Control: no-store\r\n"
                       "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
-                      "{\"ok\":true}\n");
+                      "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}\n");
     }
     else
     {
@@ -696,6 +712,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         }
         else if (!authed)
         {
+            printf("Unauthorized HTTPS request: %.*s\r\n",
+                   (int)hm->uri.len,
+                   hm->uri.buf);
             reply_unauthorized(c);
         }
         else if (mg_match(hm->uri, mg_str("/api/logout"), NULL))
@@ -745,6 +764,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         char json[256];
         size_t len = make_state_json(json, sizeof(json));
         mark_conn_activity(c);
+        mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
+        len = make_network_json(json, sizeof(json));
         mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
     }
     else if (ev == MG_EV_WS_MSG)
