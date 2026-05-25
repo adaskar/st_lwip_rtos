@@ -74,7 +74,13 @@
 /*
  * HTTPS requires more queued TCP segments.
  */
-#define MEMP_NUM_TCP_SEG               64
+#define MEMP_NUM_TCP_SEG               128
+
+/*
+ * lwIP sockets are backed by netconns. The default is only 4, which is too low
+ * for multiple HTTPS/WebSocket tabs plus short-lived asset/API requests.
+ */
+#define MEMP_NUM_NETCONN               16
 
 /* ========================================================= */
 /* ================= NETIF OPTIONS ========================== */

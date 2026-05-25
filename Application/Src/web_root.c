@@ -571,10 +571,10 @@ static const unsigned char web_file_4[] = {
 };
 
 const struct mg_mem_file mg_packed_files[] = {
-  {"/web_root/assets/app.js.gz", web_file_0, sizeof(web_file_0), 1779694368},
-  {"/web_root/assets/login.js.gz", web_file_1, sizeof(web_file_1), 1779695197},
+  {"/web_root/assets/app.js.gz", web_file_0, sizeof(web_file_0), 1779698986},
+  {"/web_root/assets/login.js.gz", web_file_1, sizeof(web_file_1), 1779698424},
   {"/web_root/assets/styles.css.gz", web_file_2, sizeof(web_file_2), 1779692509},
-  {"/web_root/dashboard.html.gz", web_file_3, sizeof(web_file_3), 1779692509},
-  {"/web_root/login.html.gz", web_file_4, sizeof(web_file_4), 1779692509},
+  {"/web_root/dashboard.html.gz", web_file_3, sizeof(web_file_3), 1779698839},
+  {"/web_root/login.html.gz", web_file_4, sizeof(web_file_4), 1779698839},
   {NULL, NULL, 0, 0}
 };

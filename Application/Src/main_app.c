@@ -19,13 +19,15 @@ int _write(int fd, unsigned char *buf, int len)
 {
     static bool line_start = true;
     int i;
+    int segment_start;
 
     if (fd != 1 && fd != 2)
         return len;
 
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, 1);
 
-    for (i = 0; i < len; i++)
+    i = 0;
+    while (i < len)
     {
         if (line_start && buf[i] != '\r' && buf[i] != '\n')
         {
@@ -44,10 +46,25 @@ int _write(int fd, unsigned char *buf, int len)
             line_start = false;
         }
 
-        HAL_UART_Transmit(&huart3, &buf[i], 1, 1000);
+        segment_start = i;
+        while (i < len)
+        {
+            if (buf[i] == '\n')
+            {
+                i++;
+                line_start = true;
+                break;
+            }
+            i++;
+        }
 
-        if (buf[i] == '\n')
-            line_start = true;
+        if (i > segment_start)
+        {
+            HAL_UART_Transmit(&huart3,
+                              &buf[segment_start],
+                              (uint16_t)(i - segment_start),
+                              1000);
+        }
     }
 
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
@@ -264,6 +281,7 @@ static const output_t outputs[] = {
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_MAX_SEND_QUEUE        4096U
+#define HTTP_STATIC_LINGER_MS    100U
 #define LOGIN_PASSWORD           "1071"
 #define AUTH_COOKIE              "st_auth=1071"
 #define AUTH_TOKEN               "1071"
@@ -273,6 +291,7 @@ typedef struct
     uint32_t handshake_started_at;
     uint32_t last_activity_at;
     uint32_t last_ws_ping_at;
+    uint32_t close_after_response_at;
     bool authenticated;
     bool close_after_response;
 } conn_state_t;
@@ -355,6 +374,23 @@ static void init_conn_state(struct mg_connection *c)
 static void mark_conn_activity(struct mg_connection *c)
 {
     conn_state(c)->last_activity_at = HAL_GetTick();
+}
+
+static void close_static_when_drained(struct mg_connection *c)
+{
+    conn_state_t *state = conn_state(c);
+
+    if (!state->close_after_response ||
+        c->pfn_data != NULL ||
+        c->is_resp ||
+        c->send.len != 0 ||
+        (int32_t)(HAL_GetTick() - state->close_after_response_at) < 0)
+    {
+        return;
+    }
+
+    state->close_after_response = false;
+    c->is_draining = 1;
 }
 
 static uint32_t elapsed_since(uint32_t since)
@@ -473,13 +509,6 @@ static void serve_web_file(struct mg_connection *c,
                            const char *path,
                            bool no_store)
 {
-    char gzip_path[128];
-    size_t plain_size = 0;
-    size_t gzip_size = 0;
-    time_t mtime = 0;
-    struct mg_str *accept_encoding = mg_http_get_header(hm, "Accept-Encoding");
-    bool accepts_gzip = accept_encoding != NULL &&
-                        mg_match(*accept_encoding, mg_str("*gzip*"), NULL);
     struct mg_http_serve_opts opts = {
         .root_dir = "/web_root",
         .extra_headers = no_store ?
@@ -491,27 +520,9 @@ static void serve_web_file(struct mg_connection *c,
     };
 
     mg_mem_files = mg_packed_files;
-    conn_state(c)->close_after_response = true;
-    mg_fs_packed.st(path, &plain_size, &mtime);
-    mg_snprintf(gzip_path, sizeof(gzip_path), "%s.gz", path);
-    mg_fs_packed.st(gzip_path, &gzip_size, NULL);
-
-    printf("Static serve start conn=%lu path=%s plain=%lu gz=%lu accepts_gzip=%u sendq=%lu\r\n",
-           c->id,
-           path,
-           (unsigned long)plain_size,
-           (unsigned long)gzip_size,
-           accepts_gzip ? 1U : 0U,
-           (unsigned long)c->send.len);
-
     mg_http_serve_file(c, hm, path, &opts);
-
-    printf("Static serve queued conn=%lu path=%s sendq=%lu draining=%u resp=%u\r\n",
-           c->id,
-           path,
-           (unsigned long)c->send.len,
-           c->is_draining ? 1U : 0U,
-           c->is_resp ? 1U : 0U);
+    conn_state(c)->close_after_response = true;
+    conn_state(c)->close_after_response_at = HAL_GetTick() + HTTP_STATIC_LINGER_MS;
 }
 
 static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
@@ -982,6 +993,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     {
         mark_conn_activity(c);
     }
+    else if (ev == MG_EV_WRITE && c->is_accepted && !c->is_websocket)
+    {
+        close_static_when_drained(c);
+    }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
     {
         conn_state_t *state = conn_state(c);
@@ -1011,14 +1026,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                 c->is_closing = 1;
         }
         else if (state->close_after_response &&
-                 c->pfn_data == NULL &&
-                 !c->is_resp)
+                 c->send.len == 0)
         {
-            state->close_after_response = false;
-            c->is_draining = 1;
-            printf("Static response complete conn=%lu sendq=%lu -> close\r\n",
-                   c->id,
-                   (unsigned long)c->send.len);
+            close_static_when_drained(c);
         }
         else if (c->is_tls_hs &&
                  elapsed_since(state->handshake_started_at) > TLS_HANDSHAKE_TIMEOUT_MS)
