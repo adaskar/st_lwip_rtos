@@ -53,6 +53,24 @@ const osThreadAttr_t DHCPThread_attributes = {
   .stack_size = 1024 * 4
 };
 
+typedef struct
+{
+    bool dhcp;
+    ip4_addr_t ip;
+    ip4_addr_t netmask;
+    ip4_addr_t gateway;
+} network_config_t;
+
+static network_config_t s_net_cfg;
+
+static void net_config_init_defaults(void)
+{
+    s_net_cfg.dhcp = false;
+    IP4_ADDR(&s_net_cfg.ip,      192, 168, 100, 10);
+    IP4_ADDR(&s_net_cfg.netmask, 255, 255, 255,  0);
+    IP4_ADDR(&s_net_cfg.gateway, 192, 168, 100,  1);
+}
+
 #undef LWIP_DHCP
 
 #if LWIP_DHCP
@@ -163,15 +181,16 @@ static void InitLwip(void)
     ip_addr_t gw;
 
     tcpip_init(NULL, NULL);
+    net_config_init_defaults();
 
 #if LWIP_DHCP
     ip_addr_set_zero_ip4(&ipaddr);
     ip_addr_set_zero_ip4(&netmask);
     ip_addr_set_zero_ip4(&gw);
 #else
-    IP_ADDR4(&ipaddr,  192, 168, 100, 10);
-    IP_ADDR4(&netmask, 255, 255, 255,  0);
-    IP_ADDR4(&gw,      192, 168, 100,  1);
+    ip_addr_copy_from_ip4(ipaddr, s_net_cfg.ip);
+    ip_addr_copy_from_ip4(netmask, s_net_cfg.netmask);
+    ip_addr_copy_from_ip4(gw, s_net_cfg.gateway);
 #endif
 
     netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL, &ethernetif_init, &tcpip_input);
@@ -216,15 +235,17 @@ static const output_t outputs[] = {
 };
 
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
-#define HTTPS_IDLE_TIMEOUT_MS    300000U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_MAX_SEND_QUEUE        4096U
+#define LOGIN_PASSWORD           "1071"
+#define AUTH_COOKIE              "st_auth=1071"
 
 typedef struct
 {
     uint32_t handshake_started_at;
     uint32_t last_activity_at;
     uint32_t last_ws_ping_at;
+    bool authenticated;
 } conn_state_t;
 
 bool mg_random(void *buf, size_t len)
@@ -268,6 +289,22 @@ static uint8_t input_get(void)
 static uint32_t uptime_seconds(void)
 {
     return HAL_GetTick() / 1000U;
+}
+
+static void ip4_to_str(const ip4_addr_t *addr, char *buf, size_t len)
+{
+    ip4addr_ntoa_r(addr, buf, (int)len);
+}
+
+static bool parse_ip4_json(struct mg_str body, const char *path, ip4_addr_t *addr)
+{
+    char *value = mg_json_get_str(body, path);
+    bool ok = value != NULL && ip4addr_aton(value, addr) != 0;
+
+    if (value != NULL)
+        mg_free(value);
+
+    return ok;
 }
 
 static conn_state_t *conn_state(struct mg_connection *c)
@@ -323,6 +360,71 @@ static void mongoose_log_filter(char ch, void *param)
         line[len++] = ch;
 }
 
+static bool request_is_authenticated(struct mg_http_message *hm)
+{
+    struct mg_str *cookie = mg_http_get_header(hm, "Cookie");
+    const char *needle = AUTH_COOKIE;
+    size_t needle_len = strlen(needle);
+    size_t i;
+
+    if (cookie == NULL || cookie->len < needle_len)
+        return false;
+
+    for (i = 0; i + needle_len <= cookie->len; i++)
+    {
+        if (memcmp(cookie->buf + i, needle, needle_len) == 0)
+            return true;
+    }
+
+    return false;
+}
+
+static void reply_unauthorized(struct mg_connection *c)
+{
+    mg_http_reply(c,
+                  401,
+                  "Content-Type: application/json\r\n"
+                  "Cache-Control: no-store\r\n",
+                  "{\"error\":\"unauthorized\"}\n");
+}
+
+static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
+{
+    char *password = mg_json_get_str(hm->body, "$.password");
+    bool ok = password != NULL && strcmp(password, LOGIN_PASSWORD) == 0;
+
+    if (password != NULL)
+        mg_free(password);
+
+    if (ok)
+    {
+        mg_http_reply(c,
+                      200,
+                      "Content-Type: application/json\r\n"
+                      "Cache-Control: no-store\r\n"
+                      "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
+                      "{\"ok\":true}\n");
+    }
+    else
+    {
+        mg_http_reply(c,
+                      403,
+                      "Content-Type: application/json\r\n"
+                      "Cache-Control: no-store\r\n",
+                      "{\"error\":\"bad password\"}\n");
+    }
+}
+
+static void handle_logout(struct mg_connection *c)
+{
+    mg_http_reply(c,
+                  200,
+                  "Content-Type: application/json\r\n"
+                  "Cache-Control: no-store\r\n"
+                  "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
+                  "{\"ok\":true}\n");
+}
+
 static size_t make_state_json(char *buf, size_t len)
 {
     return (size_t)snprintf(buf,
@@ -345,10 +447,53 @@ static size_t make_state_json(char *buf, size_t len)
                             output_get(1) ? "true" : "false");
 }
 
+static size_t make_network_json(char *buf, size_t len)
+{
+    char cfg_ip[16], cfg_mask[16], cfg_gw[16];
+    char cur_ip[16], cur_mask[16], cur_gw[16];
+
+    ip4_to_str(&s_net_cfg.ip, cfg_ip, sizeof(cfg_ip));
+    ip4_to_str(&s_net_cfg.netmask, cfg_mask, sizeof(cfg_mask));
+    ip4_to_str(&s_net_cfg.gateway, cfg_gw, sizeof(cfg_gw));
+    ip4addr_ntoa_r(netif_ip4_addr(&gnetif), cur_ip, sizeof(cur_ip));
+    ip4addr_ntoa_r(netif_ip4_netmask(&gnetif), cur_mask, sizeof(cur_mask));
+    ip4addr_ntoa_r(netif_ip4_gw(&gnetif), cur_gw, sizeof(cur_gw));
+
+    return (size_t)snprintf(buf,
+                            len,
+                            "{"
+                            "\"dhcp\":%s,"
+                            "\"ip\":\"%s\","
+                            "\"netmask\":\"%s\","
+                            "\"gateway\":\"%s\","
+                            "\"current\":{\"ip\":\"%s\",\"netmask\":\"%s\",\"gateway\":\"%s\",\"link\":%s}"
+                            "}",
+                            s_net_cfg.dhcp ? "true" : "false",
+                            cfg_ip,
+                            cfg_mask,
+                            cfg_gw,
+                            cur_ip,
+                            cur_mask,
+                            cur_gw,
+                            netif_is_link_up(&gnetif) ? "true" : "false");
+}
+
 static void reply_state(struct mg_connection *c)
 {
     char json[256];
     make_state_json(json, sizeof(json));
+    mg_http_reply(c,
+                  200,
+                  "Content-Type: application/json\r\n"
+                  "Cache-Control: no-store\r\n",
+                  "%s",
+                  json);
+}
+
+static void reply_network(struct mg_connection *c)
+{
+    char json[256];
+    make_network_json(json, sizeof(json));
     mg_http_reply(c,
                   200,
                   "Content-Type: application/json\r\n"
@@ -406,6 +551,51 @@ static bool handle_output_json(struct mg_mgr *mgr, struct mg_str body)
 
     output_set((size_t)id, on);
     broadcast_state(mgr);
+    return true;
+}
+
+static bool apply_network_config(struct mg_str body)
+{
+    bool dhcp = false;
+    ip4_addr_t ip, netmask, gateway;
+
+    if (!mg_json_get_bool(body, "$.dhcp", &dhcp))
+        return false;
+
+    if (!dhcp)
+    {
+        if (!parse_ip4_json(body, "$.ip", &ip) ||
+            !parse_ip4_json(body, "$.netmask", &netmask) ||
+            !parse_ip4_json(body, "$.gateway", &gateway))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        ip4_addr_set_zero(&ip);
+        ip4_addr_set_zero(&netmask);
+        ip4_addr_set_zero(&gateway);
+    }
+
+    s_net_cfg.dhcp = dhcp;
+    s_net_cfg.ip = ip;
+    s_net_cfg.netmask = netmask;
+    s_net_cfg.gateway = gateway;
+
+    if (dhcp)
+    {
+        ip4_addr_t zero;
+        ip4_addr_set_zero(&zero);
+        netifapi_netif_set_addr(&gnetif, &zero, &zero, &zero);
+        netifapi_dhcp_start(&gnetif);
+    }
+    else
+    {
+        netifapi_dhcp_stop(&gnetif);
+        netifapi_netif_set_addr(&gnetif, &s_net_cfg.ip, &s_net_cfg.netmask, &s_net_cfg.gateway);
+    }
+
     return true;
 }
 
@@ -476,6 +666,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     else if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+        bool authed = request_is_authenticated(hm);
 
         mark_conn_activity(c);
 
@@ -491,17 +682,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                           "%s",
                           dashboard_html);
         }
-        else if (mg_match(hm->uri, mg_str("/api/state"), NULL))
+        else if (mg_match(hm->uri, mg_str("/api/login"), NULL))
         {
-            reply_state(c);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/output"), NULL))
-        {
-            handle_output_update(c, hm, c->mgr);
-        }
-        else if (mg_match(hm->uri, mg_str("/ws"), NULL))
-        {
-            mg_ws_upgrade(c, hm, NULL);
+            handle_login(c, hm);
         }
         else if (mg_match(hm->uri, mg_str("/favicon.ico"), NULL) ||
                  mg_match(hm->uri, mg_str("/apple-touch-icon*"), NULL))
@@ -510,6 +693,43 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                           204,
                           "Cache-Control: max-age=86400\r\n",
                           "");
+        }
+        else if (!authed)
+        {
+            reply_unauthorized(c);
+        }
+        else if (mg_match(hm->uri, mg_str("/api/logout"), NULL))
+        {
+            handle_logout(c);
+        }
+        else if (mg_match(hm->uri, mg_str("/api/state"), NULL))
+        {
+            reply_state(c);
+        }
+        else if (mg_match(hm->uri, mg_str("/api/output"), NULL))
+        {
+            handle_output_update(c, hm, c->mgr);
+        }
+        else if (mg_match(hm->uri, mg_str("/api/network"), NULL))
+        {
+            if (mg_strcasecmp(hm->method, mg_str("POST")) == 0)
+            {
+                if (!apply_network_config(hm->body))
+                {
+                    mg_http_reply(c,
+                                  400,
+                                  "Content-Type: application/json\r\n"
+                                  "Cache-Control: no-store\r\n",
+                                  "{\"error\":\"invalid network config\"}\n");
+                    return;
+                }
+            }
+            reply_network(c);
+        }
+        else if (mg_match(hm->uri, mg_str("/ws"), NULL))
+        {
+            conn_state(c)->authenticated = true;
+            mg_ws_upgrade(c, hm, NULL);
         }
         else
         {
@@ -531,10 +751,23 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
         mark_conn_activity(c);
-        if (mg_match(wm->data, mg_str("state"), NULL))
+
+        if (!conn_state(c)->authenticated)
+        {
+            static const char unauthorized[] = "{\"error\":\"unauthorized\"}";
+            mg_ws_send(c, unauthorized, strlen(unauthorized), WEBSOCKET_OP_TEXT);
+            c->is_draining = 1;
+        }
+        else if (mg_match(wm->data, mg_str("state"), NULL))
         {
             char json[256];
             size_t len = make_state_json(json, sizeof(json));
+            mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
+        }
+        else if (mg_match(wm->data, mg_str("network"), NULL))
+        {
+            char json[256];
+            size_t len = make_network_json(json, sizeof(json));
             mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
         }
         else
@@ -565,10 +798,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             if (c->send.len > WS_MAX_SEND_QUEUE)
                 c->is_closing = 1;
         }
-        else if ((c->is_tls_hs &&
-                  elapsed_since(state->handshake_started_at) > TLS_HANDSHAKE_TIMEOUT_MS) ||
-                 (!c->is_tls_hs &&
-                  elapsed_since(state->last_activity_at) > HTTPS_IDLE_TIMEOUT_MS))
+        else if (c->is_tls_hs &&
+                 elapsed_since(state->handshake_started_at) > TLS_HANDSHAKE_TIMEOUT_MS)
         {
             c->is_closing = 1;
         }
