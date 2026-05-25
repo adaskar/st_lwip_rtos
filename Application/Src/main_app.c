@@ -215,6 +215,18 @@ static const output_t outputs[] = {
     { "Output 1", "PA15", m_OUT_1_GPIO_Port, m_OUT_1_Pin },
 };
 
+#define TLS_HANDSHAKE_TIMEOUT_MS 5000U
+#define HTTPS_IDLE_TIMEOUT_MS    300000U
+#define WS_PING_INTERVAL_MS      15000U
+#define WS_MAX_SEND_QUEUE        4096U
+
+typedef struct
+{
+    uint32_t handshake_started_at;
+    uint32_t last_activity_at;
+    uint32_t last_ws_ping_at;
+} conn_state_t;
+
 bool mg_random(void *buf, size_t len)
 {
     uint8_t *p = (uint8_t *)buf;
@@ -256,6 +268,59 @@ static uint8_t input_get(void)
 static uint32_t uptime_seconds(void)
 {
     return HAL_GetTick() / 1000U;
+}
+
+static conn_state_t *conn_state(struct mg_connection *c)
+{
+    return (conn_state_t *)c->data;
+}
+
+static void init_conn_state(struct mg_connection *c)
+{
+    conn_state_t *state = conn_state(c);
+    uint32_t now = HAL_GetTick();
+
+    memset(state, 0, sizeof(*state));
+    state->handshake_started_at = now;
+    state->last_activity_at = now;
+    state->last_ws_ping_at = now;
+}
+
+static void mark_conn_activity(struct mg_connection *c)
+{
+    conn_state(c)->last_activity_at = HAL_GetTick();
+}
+
+static uint32_t elapsed_since(uint32_t since)
+{
+    return HAL_GetTick() - since;
+}
+
+static void mongoose_log_filter(char ch, void *param)
+{
+    static char line[160];
+    static size_t len = 0;
+
+    (void)param;
+
+    if (ch == '\r')
+        return;
+
+    if (ch == '\n')
+    {
+        line[len] = '\0';
+        if (len > 0 &&
+            strstr(line, "accept failed, errno 103") == NULL &&
+            strstr(line, " socket error") == NULL)
+        {
+            printf("%s\r\n", line);
+        }
+        len = 0;
+        return;
+    }
+
+    if (len < sizeof(line) - 1)
+        line[len++] = ch;
 }
 
 static size_t make_state_json(char *buf, size_t len)
@@ -317,7 +382,8 @@ static void handle_output_update(struct mg_connection *c,
     {
         mg_http_reply(c,
                       400,
-                      "Content-Type: application/json\r\n",
+                      "Content-Type: application/json\r\n"
+                      "Cache-Control: no-store\r\n",
                       "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}\n");
         return;
     }
@@ -327,15 +393,30 @@ static void handle_output_update(struct mg_connection *c,
     broadcast_state(mgr);
 }
 
+static bool handle_output_json(struct mg_mgr *mgr, struct mg_str body)
+{
+    long id = mg_json_get_long(body, "$.id", -1);
+    bool on = false;
+
+    if (id < 0 || id >= (long)(sizeof(outputs) / sizeof(outputs[0])) ||
+        !mg_json_get_bool(body, "$.on", &on))
+    {
+        return false;
+    }
+
+    output_set((size_t)id, on);
+    broadcast_state(mgr);
+    return true;
+}
+
 static void start_tls(struct mg_connection *c)
 {
     struct mg_tls_opts opts;
-    uint32_t handshake_start = HAL_GetTick();
 
     memset(&opts, 0, sizeof(opts));
     opts.cert = mg_str((const char *)cert_pem);
     opts.key = mg_str((const char *)key_pem);
-    memcpy(c->data, &handshake_start, sizeof(handshake_start));
+    init_conn_state(c);
     printf("HTTPS client connected\r\n");
     mg_tls_init(c, &opts);
 }
@@ -385,16 +466,18 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         start_tls(c);
     else if (ev == MG_EV_TLS_HS)
     {
-        uint32_t handshake_start;
+        conn_state_t *state = conn_state(c);
         struct mg_tls *tls = (struct mg_tls *)c->tls;
-        memcpy(&handshake_start, c->data, sizeof(handshake_start));
         printf("TLS handshake OK time=%lu ms cipher: %s\r\n",
-               (unsigned long)(HAL_GetTick() - handshake_start),
+               (unsigned long)elapsed_since(state->handshake_started_at),
                mbedtls_ssl_get_ciphersuite(&tls->ssl));
+        mark_conn_activity(c);
     }
     else if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+
+        mark_conn_activity(c);
 
         printf("HTTPS request received: %lu bytes\r\n",
                (unsigned long)hm->message.len);
@@ -420,11 +503,20 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             mg_ws_upgrade(c, hm, NULL);
         }
+        else if (mg_match(hm->uri, mg_str("/favicon.ico"), NULL) ||
+                 mg_match(hm->uri, mg_str("/apple-touch-icon*"), NULL))
+        {
+            mg_http_reply(c,
+                          204,
+                          "Cache-Control: max-age=86400\r\n",
+                          "");
+        }
         else
         {
             mg_http_reply(c,
                           404,
-                          "Content-Type: application/json\r\n",
+                          "Content-Type: application/json\r\n"
+                          "Cache-Control: no-store\r\n",
                           "{\"error\":\"not found\"}\n");
         }
     }
@@ -432,21 +524,54 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     {
         char json[256];
         size_t len = make_state_json(json, sizeof(json));
+        mark_conn_activity(c);
         mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
     }
     else if (ev == MG_EV_WS_MSG)
     {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
+        mark_conn_activity(c);
         if (mg_match(wm->data, mg_str("state"), NULL))
         {
             char json[256];
             size_t len = make_state_json(json, sizeof(json));
             mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
         }
+        else
+        {
+            (void)handle_output_json(c->mgr, wm->data);
+        }
+    }
+    else if (ev == MG_EV_WS_CTL)
+    {
+        mark_conn_activity(c);
     }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
     {
         printf("HTTPS client disconnected\r\n");
+    }
+    else if (ev == MG_EV_POLL && c->is_accepted)
+    {
+        conn_state_t *state = conn_state(c);
+
+        if (c->is_websocket)
+        {
+            if (elapsed_since(state->last_ws_ping_at) >= WS_PING_INTERVAL_MS)
+            {
+                state->last_ws_ping_at = HAL_GetTick();
+                mg_ws_send(c, "", 0, WEBSOCKET_OP_PING);
+            }
+
+            if (c->send.len > WS_MAX_SEND_QUEUE)
+                c->is_closing = 1;
+        }
+        else if ((c->is_tls_hs &&
+                  elapsed_since(state->handshake_started_at) > TLS_HANDSHAKE_TIMEOUT_MS) ||
+                 (!c->is_tls_hs &&
+                  elapsed_since(state->last_activity_at) > HTTPS_IDLE_TIMEOUT_MS))
+        {
+            c->is_closing = 1;
+        }
     }
 }
 
@@ -462,6 +587,7 @@ static void https_server_task(void *argument)
 
     printf("Network ready\r\n");
 
+    mg_log_set_fn(mongoose_log_filter, NULL);
     mg_log_set(MG_LL_INFO);
     mg_mgr_init(&mgr);
 
@@ -483,7 +609,7 @@ static void https_server_task(void *argument)
 
     for (;;)
     {
-        mg_mgr_poll(&mgr, 50);
+        mg_mgr_poll(&mgr, 10);
 
         if (HAL_GetTick() - last_broadcast >= 1000U)
         {

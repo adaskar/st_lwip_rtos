@@ -23,9 +23,9 @@ static const char dashboard_html[] =
 "function log(t){const e=$('log');const p=document.createElement('div');p.textContent=new Date().toLocaleTimeString()+'  '+t;e.prepend(p);while(e.children.length>60)e.lastChild.remove()}"
 "function render(s){$('out0').checked=!!s.outputs[0].on;$('out1').checked=!!s.outputs[1].on;$('out0State').textContent=s.outputs[0].on?'On':'Off';$('out1State').textContent=s.outputs[1].on?'On':'Off';$('inputText').textContent=s.input.active?'High':'Low';$('inputPill').classList.toggle('active',!!s.input.active);$('uptime').textContent=fmt(s.uptime);$('updated').textContent='Updated '+new Date().toLocaleTimeString()}"
 "async function state(){const r=await fetch('/api/state',{cache:'no-store'});render(await r.json())}"
-"async function setOut(id,on){await fetch('/api/output',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on})});state()}"
-"function connect(){ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');ws.onopen=()=>{ $('wsDot').className='dot ok';$('wsText').textContent='Live';log('WebSocket connected');state()};ws.onmessage=e=>render(JSON.parse(e.data));ws.onclose=()=>{ $('wsDot').className='dot bad';$('wsText').textContent='Offline';setTimeout(connect,1200)};ws.onerror=()=>ws.close()}"
-"$('out0').onchange=e=>setOut(0,e.target.checked);$('out1').onchange=e=>setOut(1,e.target.checked);$('refresh').onclick=state;connect();state();"
+"async function setOut(id,on){if(ws&&ws.readyState===1){ws.send(JSON.stringify({id,on}))}else{await fetch('/api/output',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on})});state()}}"
+"function connect(){ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');ws.onopen=()=>{ $('wsDot').className='dot ok';$('wsText').textContent='Live';log('WebSocket connected');ws.send('state')};ws.onmessage=e=>render(JSON.parse(e.data));ws.onclose=()=>{ $('wsDot').className='dot bad';$('wsText').textContent='Offline';setTimeout(connect,1200)};ws.onerror=()=>ws.close()}"
+"$('out0').onchange=e=>setOut(0,e.target.checked);$('out1').onchange=e=>setOut(1,e.target.checked);$('refresh').onclick=()=>ws&&ws.readyState===1?ws.send('state'):state();connect();"
 "</script></body></html>";
 
 #endif /* DASHBOARD_HTML_H */
