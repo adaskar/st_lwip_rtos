@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Device Dashboard</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <p class="eyebrow">STM32 H573</p>
+          <h1>Device Console</h1>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div class="connection-pill" id="connection-state">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+        <button id="logout-button" class="button ghost" type="button">Logout</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Configuration sections">
+        <nav class="section-nav">
+          <button class="nav-item active" type="button" data-view="dashboard">Dashboard</button>
+          <button class="nav-item" type="button" data-view="network">Network</button>
+          <button class="nav-item" type="button" data-view="osdp">OSDP</button>
+          <button class="nav-item" type="button" data-view="certificates">Certificates</button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <section class="view active" id="view-dashboard" aria-labelledby="dashboard-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Live status</p>
+              <h2 id="dashboard-title">Dashboard</h2>
+            </div>
+            <p id="last-updated" class="muted">Waiting for device state</p>
+          </div>
+
+          <div class="summary-grid">
+            <article class="metric-panel">
+              <span>Uptime</span>
+              <strong id="uptime-value">--</strong>
+            </article>
+            <article class="metric-panel">
+              <span>Input m_IN_3</span>
+              <strong id="input-value">--</strong>
+            </article>
+          </div>
+
+          <section class="panel" aria-labelledby="outputs-title">
+            <div class="panel-heading">
+              <h3 id="outputs-title">Outputs</h3>
+            </div>
+            <div id="outputs-list" class="outputs-list"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="event-log-title">
+            <div class="panel-heading">
+              <h3 id="event-log-title">Event Log</h3>
+              <button id="clear-log" class="button compact" type="button">Clear</button>
+            </div>
+            <div id="event-log" class="event-log" aria-live="polite"></div>
+          </section>
+        </section>
+
+        <section class="view" id="view-network" aria-labelledby="network-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h2 id="network-title">Network</h2>
+            </div>
+            <p id="network-current" class="muted">Current address unavailable</p>
+          </div>
+
+          <form id="network-form" class="panel form-stack">
+            <label class="check-field">
+              <input id="network-dhcp" name="dhcp" type="checkbox">
+              <span>Use DHCP</span>
+            </label>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>IP address</span>
+                <input id="network-ip" name="ip" inputmode="numeric" autocomplete="off" placeholder="192.168.100.10">
+              </label>
+              <label class="field">
+                <span>Netmask</span>
+                <input id="network-netmask" name="netmask" inputmode="numeric" autocomplete="off" placeholder="255.255.255.0">
+              </label>
+              <label class="field">
+                <span>Gateway</span>
+                <input id="network-gateway" name="gateway" inputmode="numeric" autocomplete="off" placeholder="192.168.100.1">
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button class="button primary" type="submit">Save network</button>
+              <p id="network-message" class="form-message" role="status" aria-live="polite"></p>
+            </div>
+          </form>
+        </section>
+
+        <section class="view" id="view-osdp" aria-labelledby="osdp-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h2 id="osdp-title">OSDP</h2>
+            </div>
+          </div>
+          <div class="empty-state">This section is ready for the next configuration module.</div>
+        </section>
+
+        <section class="view" id="view-certificates" aria-labelledby="certificates-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h2 id="certificates-title">Certificates</h2>
+            </div>
+          </div>
+          <div class="empty-state">Certificate management can be mounted here without changing the shell.</div>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

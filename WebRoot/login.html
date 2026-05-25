@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Device Login</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script defer src="/assets/login.js"></script>
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-panel" aria-labelledby="login-title">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <p class="eyebrow">Secure device access</p>
+          <h1 id="login-title">Sign in</h1>
+        </div>
+      </div>
+
+      <form id="login-form" class="form-stack" autocomplete="on">
+        <label class="field">
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+        </label>
+
+        <div class="form-actions">
+          <button class="button primary" type="submit">Sign in</button>
+          <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

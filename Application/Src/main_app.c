@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "cert.h"
-#include "dashboard_html.h"
 #include "ethernetif.h"
 #include "key.h"
 #include "lwip/netif.h"
@@ -18,11 +17,39 @@ extern RNG_HandleTypeDef hrng;
 
 int _write(int fd, unsigned char *buf, int len)
 {
+    static bool line_start = true;
+    int i;
+
+    if (fd != 1 && fd != 2)
+        return len;
+
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, 1);
-    if (fd == 1 || fd == 2)
+
+    for (i = 0; i < len; i++)
     {
-        HAL_UART_Transmit(&huart3, buf, len, 1000);
+        if (line_start && buf[i] != '\r' && buf[i] != '\n')
+        {
+            char prefix[24];
+            int prefix_len = snprintf(prefix,
+                                      sizeof(prefix),
+                                      "%lu: ",
+                                      (unsigned long)HAL_GetTick());
+            if (prefix_len > 0)
+            {
+                HAL_UART_Transmit(&huart3,
+                                  (uint8_t *)prefix,
+                                  (uint16_t)prefix_len,
+                                  1000);
+            }
+            line_start = false;
+        }
+
+        HAL_UART_Transmit(&huart3, &buf[i], 1, 1000);
+
+        if (buf[i] == '\n')
+            line_start = true;
     }
+
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
     return len;
 }
@@ -247,6 +274,7 @@ typedef struct
     uint32_t last_activity_at;
     uint32_t last_ws_ping_at;
     bool authenticated;
+    bool close_after_response;
 } conn_state_t;
 
 bool mg_random(void *buf, size_t len)
@@ -400,8 +428,114 @@ static void reply_unauthorized(struct mg_connection *c)
     mg_http_reply(c,
                   401,
                   "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n",
+                  "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n",
                   "{\"error\":\"unauthorized\"}\n");
+    c->is_draining = 1;
+}
+
+static bool uri_has_prefix(struct mg_str uri, const char *prefix)
+{
+    size_t len = strlen(prefix);
+
+    return uri.len >= len && memcmp(uri.buf, prefix, len) == 0;
+}
+
+static void redirect_to_path(struct mg_connection *c, const char *path)
+{
+    char headers[96];
+
+    mg_snprintf(headers,
+                sizeof(headers),
+                "Location: %s\r\n"
+                "Cache-Control: no-store\r\n"
+                "Connection: close\r\n",
+                path);
+    mg_http_reply(c, 303, headers, "");
+    c->is_draining = 1;
+}
+
+static bool uri_contains_dotdot(struct mg_str uri)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < uri.len; i++)
+    {
+        if (uri.buf[i] == '.' && uri.buf[i + 1] == '.')
+            return true;
+    }
+
+    return false;
+}
+
+static void serve_web_file(struct mg_connection *c,
+                           struct mg_http_message *hm,
+                           const char *path,
+                           bool no_store)
+{
+    char gzip_path[128];
+    size_t plain_size = 0;
+    size_t gzip_size = 0;
+    time_t mtime = 0;
+    struct mg_str *accept_encoding = mg_http_get_header(hm, "Accept-Encoding");
+    bool accepts_gzip = accept_encoding != NULL &&
+                        mg_match(*accept_encoding, mg_str("*gzip*"), NULL);
+    struct mg_http_serve_opts opts = {
+        .root_dir = "/web_root",
+        .extra_headers = no_store ?
+            "Cache-Control: no-store\r\n"
+            "Connection: close\r\n" :
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n",
+        .fs = &mg_fs_packed,
+    };
+
+    mg_mem_files = mg_packed_files;
+    conn_state(c)->close_after_response = true;
+    mg_fs_packed.st(path, &plain_size, &mtime);
+    mg_snprintf(gzip_path, sizeof(gzip_path), "%s.gz", path);
+    mg_fs_packed.st(gzip_path, &gzip_size, NULL);
+
+    printf("Static serve start conn=%lu path=%s plain=%lu gz=%lu accepts_gzip=%u sendq=%lu\r\n",
+           c->id,
+           path,
+           (unsigned long)plain_size,
+           (unsigned long)gzip_size,
+           accepts_gzip ? 1U : 0U,
+           (unsigned long)c->send.len);
+
+    mg_http_serve_file(c, hm, path, &opts);
+
+    printf("Static serve queued conn=%lu path=%s sendq=%lu draining=%u resp=%u\r\n",
+           c->id,
+           path,
+           (unsigned long)c->send.len,
+           c->is_draining ? 1U : 0U,
+           c->is_resp ? 1U : 0U);
+}
+
+static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
+{
+    char path[128];
+
+    if (uri_contains_dotdot(hm->uri) ||
+        mg_snprintf(path,
+                    sizeof(path),
+                    "/web_root%.*s",
+                    (int)hm->uri.len,
+                    hm->uri.buf) >= sizeof(path))
+    {
+        mg_http_reply(c,
+                      400,
+                      "Content-Type: text/plain; charset=utf-8\r\n"
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n",
+                      "bad request\n");
+        c->is_draining = 1;
+        return;
+    }
+
+    serve_web_file(c, hm, path, false);
 }
 
 static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
@@ -418,16 +552,20 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
                       200,
                       "Content-Type: application/json\r\n"
                       "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n"
                       "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
                       "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}\n");
+        c->is_draining = 1;
     }
     else
     {
         mg_http_reply(c,
                       403,
                       "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n",
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n",
                       "{\"error\":\"bad password\"}\n");
+        c->is_draining = 1;
     }
 }
 
@@ -437,8 +575,10 @@ static void handle_logout(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n"
                   "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
                   "{\"ok\":true}\n");
+    c->is_draining = 1;
 }
 
 static size_t make_state_json(char *buf, size_t len)
@@ -501,9 +641,11 @@ static void reply_state(struct mg_connection *c)
     mg_http_reply(c,
                   200,
                   "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n",
+                  "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n",
                   "%s",
                   json);
+    c->is_draining = 1;
 }
 
 static void reply_network(struct mg_connection *c)
@@ -513,9 +655,11 @@ static void reply_network(struct mg_connection *c)
     mg_http_reply(c,
                   200,
                   "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n",
+                  "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n",
                   "%s",
                   json);
+    c->is_draining = 1;
 }
 
 static void broadcast_state(struct mg_mgr *mgr)
@@ -544,8 +688,10 @@ static void handle_output_update(struct mg_connection *c,
         mg_http_reply(c,
                       400,
                       "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n",
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n",
                       "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}\n");
+        c->is_draining = 1;
         return;
     }
 
@@ -623,7 +769,7 @@ static void start_tls(struct mg_connection *c)
     opts.cert = mg_str((const char *)cert_pem);
     opts.key = mg_str((const char *)key_pem);
     init_conn_state(c);
-    printf("HTTPS client connected\r\n");
+    printf("HTTPS client connected conn=%lu\r\n", c->id);
     mg_tls_init(c, &opts);
 }
 
@@ -674,7 +820,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     {
         conn_state_t *state = conn_state(c);
         struct mg_tls *tls = (struct mg_tls *)c->tls;
-        printf("TLS handshake OK time=%lu ms cipher: %s\r\n",
+        printf("TLS handshake OK conn=%lu time=%lu ms cipher: %s\r\n",
+               c->id,
                (unsigned long)elapsed_since(state->handshake_started_at),
                mbedtls_ssl_get_ciphersuite(&tls->ssl));
         mark_conn_activity(c);
@@ -686,36 +833,67 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 
         mark_conn_activity(c);
 
-        printf("HTTPS request received: %lu bytes\r\n",
-               (unsigned long)hm->message.len);
+        printf("HTTPS request conn=%lu: %.*s %.*s (%lu bytes) sendq=%lu recvq=%lu\r\n",
+               c->id,
+               (int)hm->method.len,
+               hm->method.buf,
+               (int)hm->uri.len,
+               hm->uri.buf,
+               (unsigned long)hm->message.len,
+               (unsigned long)c->send.len,
+               (unsigned long)c->recv.len);
 
         if (mg_match(hm->uri, mg_str("/"), NULL))
         {
-            mg_http_reply(c,
-                          200,
-                          "Content-Type: text/html; charset=utf-8\r\n"
-                          "Cache-Control: no-store\r\n",
-                          "%s",
-                          dashboard_html);
+            serve_web_file(c,
+                           hm,
+                           authed ? "/web_root/dashboard.html" : "/web_root/login.html",
+                           true);
         }
         else if (mg_match(hm->uri, mg_str("/api/login"), NULL))
         {
             handle_login(c, hm);
+        }
+        else if (mg_match(hm->uri, mg_str("/login.html"), NULL))
+        {
+            if (authed)
+                redirect_to_path(c, "/");
+            else
+                serve_web_file(c, hm, "/web_root/login.html", true);
+        }
+        else if (uri_has_prefix(hm->uri, "/assets/"))
+        {
+            serve_web_asset(c, hm);
         }
         else if (mg_match(hm->uri, mg_str("/favicon.ico"), NULL) ||
                  mg_match(hm->uri, mg_str("/apple-touch-icon*"), NULL))
         {
             mg_http_reply(c,
                           204,
-                          "Cache-Control: max-age=86400\r\n",
+                          "Cache-Control: max-age=86400\r\n"
+                          "Connection: close\r\n",
                           "");
+            c->is_draining = 1;
         }
         else if (!authed)
         {
             printf("Unauthorized HTTPS request: %.*s\r\n",
                    (int)hm->uri.len,
                    hm->uri.buf);
-            reply_unauthorized(c);
+            if (mg_match(hm->uri, mg_str("/dashboard.html"), NULL) ||
+                uri_has_prefix(hm->uri, "/config/"))
+            {
+                redirect_to_path(c, "/login.html");
+            }
+            else
+            {
+                reply_unauthorized(c);
+            }
+        }
+        else if (mg_match(hm->uri, mg_str("/dashboard.html"), NULL) ||
+                 uri_has_prefix(hm->uri, "/config/"))
+        {
+            serve_web_file(c, hm, "/web_root/dashboard.html", true);
         }
         else if (mg_match(hm->uri, mg_str("/api/logout"), NULL))
         {
@@ -738,8 +916,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                     mg_http_reply(c,
                                   400,
                                   "Content-Type: application/json\r\n"
-                                  "Cache-Control: no-store\r\n",
+                                  "Cache-Control: no-store\r\n"
+                                  "Connection: close\r\n",
                                   "{\"error\":\"invalid network config\"}\n");
+                    c->is_draining = 1;
                     return;
                 }
             }
@@ -755,8 +935,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             mg_http_reply(c,
                           404,
                           "Content-Type: application/json\r\n"
-                          "Cache-Control: no-store\r\n",
+                          "Cache-Control: no-store\r\n"
+                          "Connection: close\r\n",
                           "{\"error\":\"not found\"}\n");
+            c->is_draining = 1;
         }
     }
     else if (ev == MG_EV_WS_OPEN)
@@ -802,7 +984,16 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
     {
-        printf("HTTPS client disconnected\r\n");
+        conn_state_t *state = conn_state(c);
+
+        printf("HTTPS client disconnected conn=%lu websocket=%u draining=%u closing=%u sendq=%lu recvq=%lu age=%lu ms\r\n",
+               c->id,
+               c->is_websocket ? 1U : 0U,
+               c->is_draining ? 1U : 0U,
+               c->is_closing ? 1U : 0U,
+               (unsigned long)c->send.len,
+               (unsigned long)c->recv.len,
+               (unsigned long)elapsed_since(state->handshake_started_at));
     }
     else if (ev == MG_EV_POLL && c->is_accepted)
     {
@@ -818,6 +1009,16 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 
             if (c->send.len > WS_MAX_SEND_QUEUE)
                 c->is_closing = 1;
+        }
+        else if (state->close_after_response &&
+                 c->pfn_data == NULL &&
+                 !c->is_resp)
+        {
+            state->close_after_response = false;
+            c->is_draining = 1;
+            printf("Static response complete conn=%lu sendq=%lu -> close\r\n",
+                   c->id,
+                   (unsigned long)c->send.len);
         }
         else if (c->is_tls_hs &&
                  elapsed_since(state->handshake_started_at) > TLS_HANDSHAKE_TIMEOUT_MS)
