@@ -17,55 +17,12 @@ extern RNG_HandleTypeDef hrng;
 
 int _write(int fd, unsigned char *buf, int len)
 {
-    static bool line_start = true;
-    int i;
-    int segment_start;
-
     if (fd != 1 && fd != 2)
         return len;
 
-    HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, 1);
+    HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_SET);
 
-    i = 0;
-    while (i < len)
-    {
-        if (line_start && buf[i] != '\r' && buf[i] != '\n')
-        {
-            char prefix[24];
-            int prefix_len = snprintf(prefix,
-                                      sizeof(prefix),
-                                      "%lu: ",
-                                      (unsigned long)HAL_GetTick());
-            if (prefix_len > 0)
-            {
-                HAL_UART_Transmit(&huart3,
-                                  (uint8_t *)prefix,
-                                  (uint16_t)prefix_len,
-                                  1000);
-            }
-            line_start = false;
-        }
-
-        segment_start = i;
-        while (i < len)
-        {
-            if (buf[i] == '\n')
-            {
-                i++;
-                line_start = true;
-                break;
-            }
-            i++;
-        }
-
-        if (i > segment_start)
-        {
-            HAL_UART_Transmit(&huart3,
-                              &buf[segment_start],
-                              (uint16_t)(i - segment_start),
-                              1000);
-        }
-    }
+    HAL_UART_Transmit(&huart3, buf, (uint16_t)len, 1000);
 
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
     return len;
