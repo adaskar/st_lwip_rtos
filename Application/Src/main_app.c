@@ -13,7 +13,6 @@
 #include "mongoose.h"
 
 extern UART_HandleTypeDef huart3;
-extern RNG_HandleTypeDef hrng;
 
 int _write(int fd, unsigned char *buf, int len)
 {
@@ -259,27 +258,6 @@ typedef struct
     uint32_t request_count;
     bool authenticated;
 } conn_state_t;
-
-bool mg_random(void *buf, size_t len)
-{
-    uint8_t *p = (uint8_t *)buf;
-
-    while (len > 0)
-    {
-        uint32_t random_word;
-        size_t chunk;
-
-        if (HAL_RNG_GenerateRandomNumber(&hrng, &random_word) != HAL_OK)
-            return false;
-
-        chunk = len < sizeof(random_word) ? len : sizeof(random_word);
-        memcpy(p, &random_word, chunk);
-        p += chunk;
-        len -= chunk;
-    }
-
-    return true;
-}
 
 static uint8_t output_get(size_t id)
 {

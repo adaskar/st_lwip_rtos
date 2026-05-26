@@ -6,6 +6,7 @@ set(LWIP_DIR ${LWIP_PORT_DIR}/stm32-mw-lwip)
 
 add_library(mongoose STATIC
     ${MONGOOSE_DIR}/mongoose.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Target/mg_random.c
 )
 
 target_include_directories(mongoose PUBLIC
