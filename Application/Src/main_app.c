@@ -760,7 +760,9 @@ static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 {
     if (ev == MG_EV_ACCEPT && c->is_tls)
+    {
         start_tls(c);
+    }
     else if (ev == MG_EV_TLS_HS)
     {
         conn_state_t *state = conn_state(c);
