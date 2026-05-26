@@ -243,6 +243,7 @@ static const output_t outputs[] = {
 };
 
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
+#define HTTPS_NO_REQUEST_TIMEOUT_MS 1000U
 #define HTTP_KEEPALIVE_TIMEOUT_MS 5000U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_MAX_SEND_QUEUE        4096U
@@ -255,6 +256,7 @@ typedef struct
     uint32_t handshake_started_at;
     uint32_t last_activity_at;
     uint32_t last_ws_ping_at;
+    uint32_t request_count;
     bool authenticated;
 } conn_state_t;
 
@@ -346,12 +348,16 @@ static uint32_t elapsed_since(uint32_t since)
 static bool http_connection_is_idle(struct mg_connection *c,
                                     const conn_state_t *state)
 {
+    uint32_t timeout_ms = state->request_count == 0U ?
+                          HTTPS_NO_REQUEST_TIMEOUT_MS :
+                          HTTP_KEEPALIVE_TIMEOUT_MS;
+
     return !c->is_websocket &&
            !c->is_tls_hs &&
            !c->is_resp &&
            c->pfn_data == NULL &&
            c->send.len == 0 &&
-           elapsed_since(state->last_activity_at) > HTTP_KEEPALIVE_TIMEOUT_MS;
+           elapsed_since(state->last_activity_at) > timeout_ms;
 }
 
 static void mongoose_log_filter(char ch, void *param)
@@ -418,8 +424,10 @@ static void reply_unauthorized(struct mg_connection *c)
     mg_http_reply(c,
                   401,
                   "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n",
+                  "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n",
                   "{\"error\":\"unauthorized\"}\n");
+    c->is_draining = 1;
 }
 
 static bool uri_has_prefix(struct mg_str uri, const char *prefix)
@@ -507,16 +515,20 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
                       200,
                       "Content-Type: application/json\r\n"
                       "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n"
                       "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
                       "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}\n");
+        c->is_draining = 1;
     }
     else
     {
         mg_http_reply(c,
                       403,
                       "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n",
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n",
                       "{\"error\":\"bad password\"}\n");
+        c->is_draining = 1;
     }
 }
 
@@ -526,8 +538,10 @@ static void handle_logout(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n"
                   "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
                   "{\"ok\":true}\n");
+    c->is_draining = 1;
 }
 
 static size_t make_state_json(char *buf, size_t len)
@@ -591,8 +605,10 @@ static void reply_state(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n"
                   "%s",
                   json);
+    c->is_draining = 1;
 }
 
 static void reply_network(struct mg_connection *c)
@@ -603,8 +619,10 @@ static void reply_network(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n"
                   "%s",
                   json);
+    c->is_draining = 1;
 }
 
 static void broadcast_state(struct mg_mgr *mgr)
@@ -642,8 +660,10 @@ static void handle_output_update(struct mg_connection *c,
         mg_http_reply(c,
                       400,
                       "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n",
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n",
                       "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}\n");
+        c->is_draining = 1;
         return;
     }
 
@@ -782,7 +802,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
         bool authed = request_is_authenticated(hm);
+        conn_state_t *state = conn_state(c);
 
+        state->request_count++;
         mark_conn_activity(c);
 
         printf("HTTPS request conn=%lu: %.*s %.*s (%lu bytes) sendq=%lu recvq=%lu\r\n",
@@ -866,8 +888,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                     mg_http_reply(c,
                                   400,
                                   "Content-Type: application/json\r\n"
-                                  "Cache-Control: no-store\r\n",
+                                  "Cache-Control: no-store\r\n"
+                                  "Connection: close\r\n",
                                   "{\"error\":\"invalid network config\"}\n");
+                    c->is_draining = 1;
                     return;
                 }
             }
@@ -883,8 +907,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             mg_http_reply(c,
                           404,
                           "Content-Type: application/json\r\n"
-                          "Cache-Control: no-store\r\n",
+                          "Cache-Control: no-store\r\n"
+                          "Connection: close\r\n",
                           "{\"error\":\"not found\"}\n");
+            c->is_draining = 1;
         }
     }
     else if (ev == MG_EV_WS_OPEN)
