@@ -20,9 +20,15 @@
 #include "stm32h5xx_hal.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
+#include "lwip/opt.h"
+#include "lwip/mem.h"
+#include "lwip/memp.h"
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
 #include "netif/etharp.h"
+#if LWIP_IPV6
+#include "lwip/ethip6.h"
+#endif
 #include "lwip/stats.h"
 #include "lwip/snmp.h"
 #include "lwip/tcpip.h"
@@ -52,6 +58,8 @@
 /* Network interface name */
 #define IFNAME0 's'
 #define IFNAME1 't'
+
+#define LINK_SPEED_OF_YOUR_NETIF_IN_BPS 100000000U
 
 #define ETH_RX_BUFFER_SIZE            1536U
 #define ETH_RX_BUFFER_CNT             16U
@@ -510,6 +518,9 @@ err_t ethernetif_init(struct netif *netif)
    * from it if you have to do some checks before sending (e.g. if link
    * is available...) */
   netif->output = etharp_output;
+#if LWIP_IPV6
+  netif->output_ip6 = ethip6_output;
+#endif
   netif->linkoutput = low_level_output;
 
   /* initialize the hardware */

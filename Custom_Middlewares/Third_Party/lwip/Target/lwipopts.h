@@ -27,10 +27,10 @@
 #define MEM_SIZE                       (64 * 1024)
 
 /*
- * lwIP heap location. Keep this region out of ETH DMA descriptors/buffers and
- * any memory region that is not accessible with the expected cache attributes.
+ * Do not define LWIP_RAM_HEAP_POINTER. Let lwIP allocate its MEM_SIZE heap as
+ * a normal static object in .bss so the linker places it before _end. That
+ * keeps lwIP memory naturally outside the newlib malloc/_sbrk heap.
  */
-#define LWIP_RAM_HEAP_POINTER          ((void *)0x20084000)
 
 /* ========================================================= */
 /* Packet buffers                                            */
