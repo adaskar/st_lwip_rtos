@@ -367,9 +367,7 @@ static void mongoose_log_filter(char ch, void *param)
     if (ch == '\n')
     {
         line[len] = '\0';
-        if (len > 0 &&
-            strstr(line, "accept failed, errno 103") == NULL &&
-            strstr(line, " socket error") == NULL)
+        if (len > 0)
         {
             printf("%s\r\n", line);
         }
