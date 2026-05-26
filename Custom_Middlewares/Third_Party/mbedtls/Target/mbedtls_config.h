@@ -2442,7 +2442,7 @@
  *
  * Enable this module to enable the buffer memory allocator.
  */
-#define MBEDTLS_MEMORY_BUFFER_ALLOC_C
+//#define MBEDTLS_MEMORY_BUFFER_ALLOC_C
 
 /**
  * \def MBEDTLS_NET_C
@@ -3046,8 +3046,12 @@
 
 /* To Use Function Macros MBEDTLS_PLATFORM_C must be enabled */
 /* MBEDTLS_PLATFORM_XXX_MACRO and MBEDTLS_PLATFORM_XXX_ALT cannot both be defined */
-//#define MBEDTLS_PLATFORM_CALLOC_MACRO        calloc /**< Default allocator macro to use, can be undefined */
-//#define MBEDTLS_PLATFORM_FREE_MACRO            free /**< Default free macro to use, can be undefined */
+#include <stddef.h>
+void *mbedtls_freertos_calloc(size_t count, size_t size);
+void mbedtls_freertos_free(void *ptr);
+
+#define MBEDTLS_PLATFORM_CALLOC_MACRO        mbedtls_freertos_calloc
+#define MBEDTLS_PLATFORM_FREE_MACRO          mbedtls_freertos_free
 //#define MBEDTLS_PLATFORM_EXIT_MACRO            exit /**< Default exit macro to use, can be undefined */
 //#define MBEDTLS_PLATFORM_TIME_MACRO            time /**< Default time macro to use, can be undefined. MBEDTLS_HAVE_TIME must be enabled */
 //#define MBEDTLS_PLATFORM_TIME_TYPE_MACRO       time_t /**< Default time macro to use, can be undefined. MBEDTLS_HAVE_TIME must be enabled */
@@ -3167,7 +3171,7 @@
  * Uncomment to set the maximum plaintext size of the outgoing I/O buffer
  * independently of the incoming I/O buffer.
  */
-//#define MBEDTLS_SSL_OUT_CONTENT_LEN             16384
+#define MBEDTLS_SSL_OUT_CONTENT_LEN             4096
 
 /** \def MBEDTLS_SSL_DTLS_MAX_BUFFERING
  *

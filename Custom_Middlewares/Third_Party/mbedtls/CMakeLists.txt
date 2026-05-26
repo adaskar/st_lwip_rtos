@@ -14,6 +14,7 @@ set(MBEDTLS_SOURCES
     
     # User Port / ALT
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/aes_alt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Target/mbedtls_freertos_heap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/low_level_rng.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/rsa_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/sha256_alt.c
@@ -35,6 +36,8 @@ target_include_directories(mbedtls PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../Drivers/STM32H5xx_HAL_Driver/Inc
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../Drivers/CMSIS/Device/ST/STM32H5xx/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../Drivers/CMSIS/Include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../Middlewares/Third_Party/FreeRTOS/Source/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure
 )
 
 target_include_directories(mbedtls PRIVATE

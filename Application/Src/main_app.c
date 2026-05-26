@@ -245,6 +245,7 @@ static const output_t outputs[] = {
 #define HTTPS_NO_REQUEST_TIMEOUT_MS 1000U
 #define HTTP_KEEPALIVE_TIMEOUT_MS 5000U
 #define WS_PING_INTERVAL_MS      15000U
+#define WS_IDLE_TIMEOUT_MS       60000U
 #define WS_MAX_SEND_QUEUE        4096U
 #define LOGIN_PASSWORD           "1071"
 #define AUTH_COOKIE              "st_auth=1071"
@@ -959,6 +960,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
             }
 
             if (c->send.len > WS_MAX_SEND_QUEUE)
+                c->is_closing = 1;
+
+            if (elapsed_since(state->last_activity_at) > WS_IDLE_TIMEOUT_MS)
                 c->is_closing = 1;
         }
         else if (c->is_tls_hs &&
