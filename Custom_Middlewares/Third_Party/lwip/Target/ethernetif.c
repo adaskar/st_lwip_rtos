@@ -57,16 +57,17 @@
 
 #define ETH_RX_BUFFER_SIZE            1536U
 #define ETH_RX_BUFFER_CNT             16U
-#define ETH_TX_BUFFER_MAX             ((ETH_TX_DESC_CNT) * 2U)
+#define ETH_TX_BUFFER_CNT             ETH_TX_DESC_CNT
 
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /*
-@Note: This interface is implemented to operate in zero-copy mode only:
+@Note: This interface is implemented to keep DMA buffer ownership local to the
+        Ethernet driver:
         - Rx Buffers will be allocated from LwIP stack Rx memory pool,
           then passed to ETH HAL driver.
-        - Tx Buffers will be allocated from LwIP stack memory heap,
-          then passed to ETH HAL driver.
+        - Tx packets are copied into driver-owned DMA buffers, then transmitted
+          asynchronously by ETH HAL.
 
 @Notes:
   1.a. ETH DMA Rx descriptors must be contiguous, the default count is 4,
@@ -92,6 +93,13 @@ typedef struct
   uint8_t buff[(ETH_RX_BUFFER_SIZE + 31) & ~31] __ALIGNED(32);
 } RxBuff_t;
 
+typedef struct
+{
+  ETH_BufferTypeDef tx_buffer;
+  uint8_t buff[(ETH_RX_BUFFER_SIZE + 31) & ~31] __ALIGNED(32);
+  uint8_t in_use;
+} TxBuff_t;
+
 extern ETH_DMADescTypeDef  DMARxDscrTab[ETH_RX_DESC_CNT]; /* Ethernet Rx DMA Descriptors */
 extern ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]; /* Ethernet Tx DMA Descriptors */
 
@@ -107,6 +115,7 @@ const osThreadAttr_t EthIf_attributes = {
 
 /* Variable Definitions */
 static uint8_t RxAllocStatus;
+static TxBuff_t TxBuffers[ETH_TX_BUFFER_CNT];
 
 osSemaphoreId_t RxPktSemaphore = NULL; /* Semaphore to signal incoming packets */
 
@@ -136,6 +145,38 @@ lan8742_IOCtx_t  LAN8742_IOCtx = {ETH_PHY_IO_Init,
 
 /* Private functions ---------------------------------------------------------*/
 void pbuf_free_custom(struct pbuf *p);
+
+static TxBuff_t *tx_buffer_alloc(void)
+{
+  TxBuff_t *tx = NULL;
+
+  taskENTER_CRITICAL();
+  for(uint32_t i = 0U; i < ETH_TX_BUFFER_CNT; i++)
+  {
+    if(TxBuffers[i].in_use == 0U)
+    {
+      TxBuffers[i].in_use = 1U;
+      tx = &TxBuffers[i];
+      break;
+    }
+  }
+  taskEXIT_CRITICAL();
+
+  return tx;
+}
+
+static void tx_buffer_release(TxBuff_t *tx)
+{
+  if(tx == NULL)
+  {
+    return;
+  }
+
+  taskENTER_CRITICAL();
+  tx->in_use = 0U;
+  taskEXIT_CRITICAL();
+}
+
 /*******************************************************************************
                        LL Driver Interface ( LwIP stack --> ETH)
 *******************************************************************************/
@@ -258,20 +299,45 @@ static void low_level_init(struct netif *netif)
   * @param p the MAC packet to send (e.g. IP packet including MAC addresses and type)
   * @return ERR_OK if the packet was sent, or ERR_IF if the packet was unable to be sent
   *
-  * @note ERR_OK means the packet was sent (but not necessarily transmit complete),
-  * and ERR_IF means the packet has more chained buffers than what the interface supports.
+  * @note This path keeps pbuf ownership entirely with lwIP. The packet is
+  * copied into a driver-owned DMA buffer, then transmitted by interrupt.
+  * HAL_ETH_TxFreeCallback() releases only that driver buffer, never a pbuf.
   */
 static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
-  uint32_t i = 0U;
+  uint32_t offset = 0U;
   struct pbuf *q = NULL;
-  err_t errval = ERR_OK;
-  ETH_BufferTypeDef Txbuffer[ETH_TX_DESC_CNT];
+  TxBuff_t *tx = NULL;
   ETH_TxPacketConfig TxConfig;
 
-  HAL_ETH_ReleaseTxPacket(&EthHandle);
+  (void)netif;
 
-  memset(Txbuffer, 0 , ETH_TX_DESC_CNT*sizeof(ETH_BufferTypeDef));
+  if(p->tot_len > ETH_RX_BUFFER_SIZE)
+  {
+    return ERR_BUF;
+  }
+
+  do
+  {
+    HAL_ETH_ReleaseTxPacket(&EthHandle);
+    tx = tx_buffer_alloc();
+    if(tx != NULL)
+    {
+      break;
+    }
+  } while(osSemaphoreAcquire(TxPktSemaphore, ETHIF_TX_TIMEOUT) == osOK);
+
+  if(tx == NULL)
+  {
+    return ERR_BUF;
+  }
+
+  for(q = p; q != NULL; q = q->next)
+  {
+    memcpy(&tx->buff[offset], q->payload, q->len);
+    offset += q->len;
+  }
+  __DMB();
 
   /* Set Tx packet config common parameters */
   memset(&TxConfig, 0 , sizeof(ETH_TxPacketConfig));
@@ -279,59 +345,27 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   TxConfig.ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC;
   TxConfig.CRCPadCtrl = ETH_CRC_PAD_INSERT;
 
-  for(q = p; q != NULL; q = q->next)
-  {
-    if(i >= ETH_TX_DESC_CNT)
-      return ERR_IF;
-
-    Txbuffer[i].buffer = q->payload;
-    Txbuffer[i].len = q->len;
-
-    if(i>0)
-    {
-      Txbuffer[i-1].next = &Txbuffer[i];
-    }
-
-    if(q->next == NULL)
-    {
-      Txbuffer[i].next = NULL;
-    }
-
-    i++;
-  }
+  tx->tx_buffer.buffer = tx->buff;
+  tx->tx_buffer.len = p->tot_len;
+  tx->tx_buffer.next = NULL;
 
   TxConfig.Length = p->tot_len;
-  TxConfig.TxBuffer = Txbuffer;
-  TxConfig.pData = p;
+  TxConfig.TxBuffer = &tx->tx_buffer;
+  TxConfig.pData = tx;
 
-  pbuf_ref(p);
-
-  do
+  if(HAL_ETH_Transmit_IT(&EthHandle, &TxConfig) == HAL_OK)
   {
-    if(HAL_ETH_Transmit_IT(&EthHandle, &TxConfig) == HAL_OK)
-    {
-      errval = ERR_OK;
-    }
-    else
-    {
+    return ERR_OK;
+  }
 
-      if(HAL_ETH_GetError(&EthHandle) & HAL_ETH_ERROR_BUSY)
-      {
-        /* Wait for descriptors to become available */
-        osSemaphoreAcquire( TxPktSemaphore, ETHIF_TX_TIMEOUT);
-        HAL_ETH_ReleaseTxPacket(&EthHandle);
-        errval = ERR_BUF;
-      }
-      else
-      {
-        /* Other error */
-        pbuf_free(p);
-        errval =  ERR_IF;
-      }
-    }
-  }while(errval == ERR_BUF);
+  tx_buffer_release(tx);
 
-  return errval;
+  if(HAL_ETH_GetError(&EthHandle) & HAL_ETH_ERROR_BUSY)
+  {
+    return ERR_BUF;
+  }
+
+  return ERR_IF;
 }
 
 /**
@@ -765,5 +799,13 @@ void HAL_ETH_RxLinkCallback(void **pStart, void **pEnd, uint8_t *buff, uint16_t 
 
 void HAL_ETH_TxFreeCallback(uint32_t * buff)
 {
-  pbuf_free((struct pbuf *)buff);
+  TxBuff_t *tx = (TxBuff_t *)buff;
+  uintptr_t addr = (uintptr_t)tx;
+  uintptr_t start = (uintptr_t)&TxBuffers[0];
+  uintptr_t end = (uintptr_t)&TxBuffers[ETH_TX_BUFFER_CNT];
+
+  if((addr >= start) && (addr < end))
+  {
+    tx_buffer_release(tx);
+  }
 }
