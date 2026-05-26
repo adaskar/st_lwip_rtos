@@ -53,7 +53,7 @@
 /* Time to block waiting for transmissions to finish */
 #define ETHIF_TX_TIMEOUT                       (2000U)
 /* Stack size of the interface thread */
-#define INTERFACE_THREAD_STACK_SIZE            ( 1024 )
+#define INTERFACE_THREAD_STACK_SIZE            ( 1024 * sizeof(StackType_t) )
 
 /* Network interface name */
 #define IFNAME0 's'
@@ -115,13 +115,14 @@ LWIP_MEMPOOL_DECLARE(RX_POOL, ETH_RX_BUFFER_CNT, sizeof(RxBuff_t), "Zero-copy RX
 osThreadId_t EthIfHandle;
 const osThreadAttr_t EthIf_attributes = {
   .name = "EthIf",
-  .priority = (osPriority_t) osPriorityRealtime,
+  .priority = (osPriority_t) osPriorityHigh,
   .stack_size = INTERFACE_THREAD_STACK_SIZE
 };
 
 /* Variable Definitions */
 static volatile uint8_t RxAllocStatus;
 static TxBuff_t TxBuffers[ETH_TX_BUFFER_CNT];
+static ethernetif_stats_t EthStats;
 
 osSemaphoreId_t RxPktSemaphore = NULL; /* Semaphore to signal incoming packets */
 
@@ -346,6 +347,7 @@ static void low_level_init(struct netif *netif)
     HAL_ETH_Start_IT(&EthHandle);
     netif_set_up(netif);
     netif_set_link_up(netif);
+    EthStats.link_up_count++;
   }
 }
 
@@ -388,6 +390,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
   if(tx == NULL)
   {
+    EthStats.tx_busy_drops++;
     return ERR_BUF;
   }
 
@@ -414,10 +417,12 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
   if(HAL_ETH_Transmit_IT(&EthHandle, &TxConfig) == HAL_OK)
   {
+    EthStats.tx_packets++;
     return ERR_OK;
   }
 
   tx_buffer_release(tx);
+  EthStats.tx_errors++;
 
   if(HAL_ETH_GetError(&EthHandle) & HAL_ETH_ERROR_BUSY)
   {
@@ -441,7 +446,10 @@ static struct pbuf * low_level_input(struct netif *netif)
 
   if(rx_alloc_status_get() == RX_ALLOC_OK)
   {
-    HAL_ETH_ReadData(&EthHandle, (void **)&p);
+    if(HAL_ETH_ReadData(&EthHandle, (void **)&p) != HAL_OK)
+    {
+      EthStats.rx_dropped++;
+    }
   }
 
   return p;
@@ -471,9 +479,11 @@ static void ethernetif_input( void *argument )
         p = low_level_input( netif );
         if (p != NULL)
         {
+          EthStats.rx_packets++;
           if (netif->input( p, netif) != ERR_OK )
           {
             pbuf_free(p);
+            EthStats.rx_dropped++;
           }
         }
 
@@ -673,6 +683,8 @@ void HAL_ETH_ErrorCallback(ETH_HandleTypeDef *heth)
 {
   uint32_t dma_error = HAL_ETH_GetDMAError(heth);
 
+  EthStats.dma_errors++;
+
   if((dma_error & ETH_DMACSR_RBU) == ETH_DMACSR_RBU)
   {
     if(RxPktSemaphore != NULL)
@@ -788,6 +800,7 @@ void ethernet_link_thread( void *argument )
       tx_reset_all();
       netifapi_netif_set_down(netif);
       netifapi_netif_set_link_down(netif);
+      EthStats.link_down_count++;
     }
     else if(!netif_is_link_up(netif) && (PHYLinkState > LAN8742_STATUS_LINK_DOWN))
     {
@@ -827,6 +840,7 @@ void ethernet_link_thread( void *argument )
         HAL_ETH_Start_IT(&EthHandle);
         netifapi_netif_set_up(netif);
         netifapi_netif_set_link_up(netif);
+        EthStats.link_up_count++;
       }
     }
 
@@ -851,6 +865,7 @@ void HAL_ETH_RxAllocateCallback(uint8_t **buff)
   {
     rx_alloc_status_set(RX_ALLOC_ERROR);
     *buff = NULL;
+    EthStats.rx_alloc_errors++;
   }
 }
 
@@ -898,4 +913,23 @@ void HAL_ETH_TxFreeCallback(uint32_t * buff)
   {
     tx_buffer_release(tx);
   }
+}
+
+void ethernetif_get_stats(ethernetif_stats_t *out)
+{
+  if(out == NULL)
+  {
+    return;
+  }
+
+  taskENTER_CRITICAL();
+  *out = EthStats;
+  taskEXIT_CRITICAL();
+}
+
+void ethernetif_reset_stats(void)
+{
+  taskENTER_CRITICAL();
+  memset(&EthStats, 0, sizeof(EthStats));
+  taskEXIT_CRITICAL();
 }

@@ -23,9 +23,25 @@
 #include "lwip/err.h"
 #include "lwip/netif.h"
 #include "cmsis_os2.h"
+#include <stdint.h>
 
 
 /* Exported types ------------------------------------------------------------*/
+typedef struct
+{
+  uint32_t rx_packets;
+  uint32_t rx_dropped;
+  uint32_t rx_alloc_errors;
+  uint32_t tx_packets;
+  uint32_t tx_errors;
+  uint32_t tx_busy_drops;
+  uint32_t dma_errors;
+  uint32_t link_up_count;
+  uint32_t link_down_count;
+} ethernetif_stats_t;
+
 err_t ethernetif_init(struct netif *netif);
 void ethernet_link_thread( void *argument );
+void ethernetif_get_stats(ethernetif_stats_t *out);
+void ethernetif_reset_stats(void);
 #endif
