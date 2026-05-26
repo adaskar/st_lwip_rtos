@@ -43,7 +43,7 @@
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
 /* The time to block waiting for input. */
-#define TIME_WAITING_FOR_INPUT                 ( osWaitForever )
+#define TIME_WAITING_FOR_INPUT                 ( 100U )
 /* Time to block waiting for transmissions to finish */
 #define ETHIF_TX_TIMEOUT                       (2000U)
 /* Stack size of the interface thread */
@@ -52,8 +52,6 @@
 /* Network interface name */
 #define IFNAME0 's'
 #define IFNAME1 't'
-
-#define ETH_DMA_TRANSMIT_TIMEOUT                (20U)
 
 #define ETH_RX_BUFFER_SIZE            1536U
 #define ETH_RX_BUFFER_CNT             16U
@@ -114,7 +112,7 @@ const osThreadAttr_t EthIf_attributes = {
 };
 
 /* Variable Definitions */
-static uint8_t RxAllocStatus;
+static volatile uint8_t RxAllocStatus;
 static TxBuff_t TxBuffers[ETH_TX_BUFFER_CNT];
 
 osSemaphoreId_t RxPktSemaphore = NULL; /* Semaphore to signal incoming packets */
@@ -174,6 +172,59 @@ static void tx_buffer_release(TxBuff_t *tx)
 
   taskENTER_CRITICAL();
   tx->in_use = 0U;
+  taskEXIT_CRITICAL();
+}
+
+static void tx_release_completed(void)
+{
+  HAL_ETH_ReleaseTxPacket(&EthHandle);
+}
+
+static void tx_reset_all(void)
+{
+  ETH_TxDescListTypeDef *tx_desc_list = &EthHandle.TxDescList;
+
+  taskENTER_CRITICAL();
+  for(uint32_t i = 0U; i < ETH_TX_BUFFER_CNT; i++)
+  {
+    TxBuffers[i].in_use = 0U;
+  }
+
+  for(uint32_t i = 0U; i < ETH_TX_DESC_CNT; i++)
+  {
+    ETH_DMADescTypeDef *tx_desc = &EthHandle.Init.TxDesc[i];
+
+    tx_desc->DESC0 = 0U;
+    tx_desc->DESC1 = 0U;
+    tx_desc->DESC2 = 0U;
+    tx_desc->DESC3 = 0U;
+    tx_desc_list->PacketAddress[i] = NULL;
+  }
+
+  tx_desc_list->CurTxDesc = 0U;
+  tx_desc_list->releaseIndex = 0U;
+  tx_desc_list->BuffersInUse = 0U;
+  tx_desc_list->CurrentPacketAddress = NULL;
+  taskEXIT_CRITICAL();
+
+  WRITE_REG(EthHandle.Instance->DMACTDTPR, (uint32_t)EthHandle.Init.TxDesc);
+}
+
+static RxAllocStatusTypeDef rx_alloc_status_get(void)
+{
+  RxAllocStatusTypeDef status;
+
+  taskENTER_CRITICAL();
+  status = (RxAllocStatusTypeDef)RxAllocStatus;
+  taskEXIT_CRITICAL();
+
+  return status;
+}
+
+static void rx_alloc_status_set(RxAllocStatusTypeDef status)
+{
+  taskENTER_CRITICAL();
+  RxAllocStatus = (uint8_t)status;
   taskEXIT_CRITICAL();
 }
 
@@ -319,7 +370,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
   do
   {
-    HAL_ETH_ReleaseTxPacket(&EthHandle);
+    tx_release_completed();
     tx = tx_buffer_alloc();
     if(tx != NULL)
     {
@@ -380,7 +431,7 @@ static struct pbuf * low_level_input(struct netif *netif)
 {
   struct pbuf *p = NULL;
 
-  if(RxAllocStatus == RX_ALLOC_OK)
+  if(rx_alloc_status_get() == RX_ALLOC_OK)
   {
     HAL_ETH_ReadData(&EthHandle, (void **)&p);
   }
@@ -401,7 +452,11 @@ static void ethernetif_input( void *argument )
 
   for( ;; )
   {
-    if (osSemaphoreAcquire( RxPktSemaphore, TIME_WAITING_FOR_INPUT)==osOK)
+    osStatus_t status = osSemaphoreAcquire(RxPktSemaphore, TIME_WAITING_FOR_INPUT);
+
+    tx_release_completed();
+
+    if (status == osOK)
     {
       do
       {
@@ -473,10 +528,13 @@ void pbuf_free_custom(struct pbuf *p)
   struct pbuf_custom* custom_pbuf = (struct pbuf_custom*)p;
   LWIP_MEMPOOL_FREE(RX_POOL, custom_pbuf);
 
-  if (RxAllocStatus == RX_ALLOC_ERROR)
+  if (rx_alloc_status_get() == RX_ALLOC_ERROR)
   {
-    RxAllocStatus = RX_ALLOC_OK;
-    osSemaphoreRelease(RxPktSemaphore);
+    rx_alloc_status_set(RX_ALLOC_OK);
+    if(RxPktSemaphore != NULL)
+    {
+      osSemaphoreRelease(RxPktSemaphore);
+    }
   }
 }
 
@@ -572,7 +630,12 @@ u32_t sys_now(void)
   */
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
-  osSemaphoreRelease(RxPktSemaphore);
+  (void)heth;
+
+  if(RxPktSemaphore != NULL)
+  {
+    osSemaphoreRelease(RxPktSemaphore);
+  }
 }
 
 /**
@@ -582,7 +645,12 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
   */
 void HAL_ETH_TxCpltCallback(ETH_HandleTypeDef *heth)
 {
-  osSemaphoreRelease(TxPktSemaphore);
+  (void)heth;
+
+  if(TxPktSemaphore != NULL)
+  {
+    osSemaphoreRelease(TxPktSemaphore);
+  }
 }
 
 /**
@@ -592,14 +660,22 @@ void HAL_ETH_TxCpltCallback(ETH_HandleTypeDef *heth)
   */
 void HAL_ETH_ErrorCallback(ETH_HandleTypeDef *heth)
 {
-  if((HAL_ETH_GetDMAError(heth) & ETH_DMACSR_RBU) == ETH_DMACSR_RBU)
+  uint32_t dma_error = HAL_ETH_GetDMAError(heth);
+
+  if((dma_error & ETH_DMACSR_RBU) == ETH_DMACSR_RBU)
   {
-    osSemaphoreRelease(RxPktSemaphore);
+    if(RxPktSemaphore != NULL)
+    {
+      osSemaphoreRelease(RxPktSemaphore);
+    }
   }
 
-  if((HAL_ETH_GetDMAError(heth) & ETH_DMACSR_TBU) == ETH_DMACSR_TBU)
+  if((dma_error & (ETH_DMACSR_TBU | ETH_DMACSR_TPS | ETH_DMACSR_FBE)) != 0U)
   {
-    osSemaphoreRelease(TxPktSemaphore);
+    if(TxPktSemaphore != NULL)
+    {
+      osSemaphoreRelease(TxPktSemaphore);
+    }
   }
 }
 
@@ -690,12 +766,15 @@ void ethernet_link_thread( void *argument )
 
   for(;;)
   {
+    linkchanged = 0U;
 
     PHYLinkState = LAN8742_GetLinkState(&LAN8742);
 
     if(netif_is_link_up(netif) && (PHYLinkState <= LAN8742_STATUS_LINK_DOWN))
     {
       HAL_ETH_Stop_IT(&EthHandle);
+      tx_release_completed();
+      tx_reset_all();
       netifapi_netif_set_down(netif);
       netifapi_netif_set_link_down(netif);
     }
@@ -759,7 +838,7 @@ void HAL_ETH_RxAllocateCallback(uint8_t **buff)
   }
   else
   {
-    RxAllocStatus = RX_ALLOC_ERROR;
+    rx_alloc_status_set(RX_ALLOC_ERROR);
     *buff = NULL;
   }
 }

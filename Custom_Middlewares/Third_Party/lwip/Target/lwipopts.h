@@ -5,7 +5,7 @@
  * Project lwIP profile:
  *
  * - STM32H573 + FreeRTOS
- * - STM32 HAL ETH zero-copy target driver
+ * - STM32 HAL ETH target driver with zero-copy RX and driver-owned async TX
  * - Mongoose 7.x using lwIP sockets
  * - HTTPS + WebSocket dashboard on ports 80/443
  * - Static default IPv4, with runtime DHCP support available from the UI
