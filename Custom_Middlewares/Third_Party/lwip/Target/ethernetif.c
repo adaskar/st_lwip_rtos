@@ -269,6 +269,8 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   ETH_BufferTypeDef Txbuffer[ETH_TX_DESC_CNT];
   ETH_TxPacketConfig TxConfig;
 
+  HAL_ETH_ReleaseTxPacket(&EthHandle);
+
   memset(Txbuffer, 0 , ETH_TX_DESC_CNT*sizeof(ETH_BufferTypeDef));
 
   /* Set Tx packet config common parameters */

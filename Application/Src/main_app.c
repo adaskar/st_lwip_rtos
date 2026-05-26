@@ -280,6 +280,8 @@ static const output_t outputs[] = {
 
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define HTTP_KEEPALIVE_TIMEOUT_MS 5000U
+#define HTTPS_MAX_CONNECTIONS    24U
+#define TLS_MAX_HANDSHAKES       4U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_MAX_SEND_QUEUE        4096U
 #define LOGIN_PASSWORD           "1071"
@@ -372,6 +374,26 @@ static void init_conn_state(struct mg_connection *c)
 static void mark_conn_activity(struct mg_connection *c)
 {
     conn_state(c)->last_activity_at = HAL_GetTick();
+}
+
+static void count_https_connections(struct mg_mgr *mgr,
+                                    size_t *total,
+                                    size_t *handshakes)
+{
+    struct mg_connection *conn;
+
+    *total = 0;
+    *handshakes = 0;
+
+    for (conn = mgr->conns; conn != NULL; conn = conn->next)
+    {
+        if (!conn->is_accepted || !conn->is_tls)
+            continue;
+
+        (*total)++;
+        if (conn->is_tls_hs)
+            (*handshakes)++;
+    }
 }
 
 static uint32_t elapsed_since(uint32_t since)
@@ -754,11 +776,25 @@ static bool apply_network_config(struct mg_str body)
 static void start_tls(struct mg_connection *c)
 {
     struct mg_tls_opts opts;
+    size_t total = 0;
+    size_t handshakes = 0;
 
     memset(&opts, 0, sizeof(opts));
+    init_conn_state(c);
+
+    count_https_connections(c->mgr, &total, &handshakes);
+    if (total > HTTPS_MAX_CONNECTIONS || handshakes >= TLS_MAX_HANDSHAKES)
+    {
+        printf("HTTPS client rejected conn=%lu total=%lu handshakes=%lu\r\n",
+               c->id,
+               (unsigned long)total,
+               (unsigned long)handshakes);
+        c->is_closing = 1;
+        return;
+    }
+
     opts.cert = mg_str((const char *)cert_pem);
     opts.key = mg_str((const char *)key_pem);
-    init_conn_state(c);
     printf("HTTPS client connected conn=%lu\r\n", c->id);
     mg_tls_init(c, &opts);
 }

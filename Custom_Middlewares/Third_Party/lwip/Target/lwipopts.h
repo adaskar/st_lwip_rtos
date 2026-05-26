@@ -2,202 +2,152 @@
 #define __LWIPOPTS_H__
 
 /*
- * Optimized lwIP configuration for:
+ * Project lwIP profile:
  *
- * STM32 + FreeRTOS + LwIP + mbedTLS HTTPS server
- *
- * Suitable for:
- * - HTTP
- * - HTTPS (TLS 1.2)
- * - REST APIs
- * - Websocket
- * - MQTT
- *
- * Recommended for STM32H5/H7/F7.
+ * - STM32H573 + FreeRTOS
+ * - STM32 HAL ETH zero-copy target driver
+ * - Mongoose 7.x using lwIP sockets
+ * - HTTPS + WebSocket dashboard on ports 80/443
+ * - Static default IPv4, with runtime DHCP support available from the UI
  */
 
 /* ========================================================= */
-/* ================= SYSTEM OPTIONS ========================= */
+/* System                                                    */
 /* ========================================================= */
 
 #define NO_SYS                         0
 #define SYS_LIGHTWEIGHT_PROT           1
+#define LWIP_TIMERS                    1
 
 /* ========================================================= */
-/* ================= MEMORY OPTIONS ========================= */
+/* Memory                                                    */
 /* ========================================================= */
 
 #define MEM_ALIGNMENT                  4
-
-/*
- * VERY IMPORTANT:
- * HTTPS + TLS requires large memory.
- *
- * 64KB is a good starting point.
- */
 #define MEM_SIZE                       (64 * 1024)
 
 /*
- * Make sure this region:
- *
- * - exists
- * - does not overlap ETH DMA
- * - is DMA-safe
- * - cache coherent
+ * lwIP heap location. Keep this region out of ETH DMA descriptors/buffers and
+ * any memory region that is not accessible with the expected cache attributes.
  */
 #define LWIP_RAM_HEAP_POINTER          ((void *)0x20084000)
 
 /* ========================================================= */
-/* ================= PBUF OPTIONS =========================== */
+/* Packet buffers                                            */
 /* ========================================================= */
 
+/*
+ * ethernetif.c uses a separate custom RX pool:
+ *   ETH_RX_BUFFER_SIZE = 1536
+ *   ETH_RX_BUFFER_CNT  = 16
+ *
+ * Keep PBUF_POOL_BUFSIZE at full Ethernet frame size so internally allocated
+ * pbufs do not fragment normal TCP/MSS-sized traffic.
+ */
 #define PBUF_POOL_SIZE                 64
-
-/*
- * 1536 = enough for full Ethernet frame.
- */
 #define PBUF_POOL_BUFSIZE              1536
-
-/*
- * Zero-copy RX support.
- */
 #define LWIP_SUPPORT_CUSTOM_PBUF       1
 
 /* ========================================================= */
-/* ================= MEMP OPTIONS =========================== */
+/* Protocol control blocks and pools                         */
 /* ========================================================= */
 
-#define MEMP_NUM_TCP_PCB               16
-
-#define MEMP_NUM_TCP_PCB_LISTEN        32
-
 /*
- * HTTPS requires more queued TCP segments.
+ * Mongoose uses the socket API. Each socket consumes a netconn; the HTTP and
+ * HTTPS listeners also consume resources. Size for at least 8 simultaneous
+ * dashboard clients: one WebSocket plus a small number of keep-alive HTTP
+ * sockets per browser, with headroom for icons/API retries.
  */
-#define MEMP_NUM_TCP_SEG               128
+#define MEMP_NUM_NETCONN               40
+#define MEMP_NUM_NETBUF                40
 
-/*
- * lwIP sockets are backed by netconns. The default is only 4, which is too low
- * for multiple HTTPS/WebSocket tabs plus short-lived asset/API requests.
- */
-#define MEMP_NUM_NETCONN               16
+#define MEMP_NUM_TCP_PCB               36
+#define MEMP_NUM_TCP_PCB_LISTEN        4
+#define MEMP_NUM_TCP_SEG               256
+
+#define MEMP_NUM_UDP_PCB               6
+#define MEMP_NUM_RAW_PCB               4
+#define MEMP_NUM_ARP_QUEUE             8
+#define MEMP_NUM_TCPIP_MSG_API         48
+#define MEMP_NUM_TCPIP_MSG_INPKT       48
+#define MEMP_NUM_SYS_TIMEOUT           (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
 
 /* ========================================================= */
-/* ================= NETIF OPTIONS ========================== */
+/* Network interface                                         */
 /* ========================================================= */
 
 #define LWIP_NETIF_LINK_CALLBACK       1
+#define LWIP_NETIF_API                 1
 
 /* ========================================================= */
-/* ================= TCP OPTIONS ============================ */
+/* IPv4 / ARP / ICMP                                         */
+/* ========================================================= */
+
+#define LWIP_IPV4                      1
+#define LWIP_ICMP                      1
+#define ARP_QUEUEING                   1
+
+/* ========================================================= */
+/* TCP                                                       */
 /* ========================================================= */
 
 #define LWIP_TCP                       1
-
 #define TCP_TTL                        255
 
-/*
- * Ethernet MTU 1500
- * IP header 20
- * TCP header 20
- */
+/* Ethernet MTU 1500 - IPv4 header 20 - TCP header 20. */
 #define TCP_MSS                        1460
 
 /*
- * Larger windows improve TLS throughput.
+ * Moderate windows keep HTTPS responsive without letting many idle browser
+ * sockets reserve desktop-sized buffers on an MCU.
  */
-#define TCP_WND                        (8 * TCP_MSS)
+#define TCP_WND                        (6 * TCP_MSS)
+#define TCP_SND_BUF                    (6 * TCP_MSS)
+#define TCP_SND_QUEUELEN               ((4 * (TCP_SND_BUF) + (TCP_MSS - 1)) / TCP_MSS)
+#define TCP_OVERSIZE                   TCP_MSS
 
-#define TCP_SND_BUF                    (8 * TCP_MSS)
-
-/*
- * Keepalive support.
- */
 #define LWIP_TCP_KEEPALIVE             1
+#define TCP_LISTEN_BACKLOG             1
+#define TCP_DEFAULT_LISTEN_BACKLOG     16
 
 /* ========================================================= */
-/* ================= UDP OPTIONS ============================ */
+/* UDP / DHCP / DNS                                          */
 /* ========================================================= */
 
 #define LWIP_UDP                       1
 #define UDP_TTL                        255
 
-/* ========================================================= */
-/* ================= ICMP OPTIONS =========================== */
-/* ========================================================= */
-
-#define LWIP_ICMP                      1
-
-/* ========================================================= */
-/* ================= DHCP OPTIONS =========================== */
-/* ========================================================= */
-
 #define LWIP_DHCP                      1
-
-/* ========================================================= */
-/* ================= DNS OPTIONS ============================ */
-/* ========================================================= */
-
 #define LWIP_DNS                       1
 
 /* ========================================================= */
-/* ================= ARP OPTIONS ============================ */
-/* ========================================================= */
-
-#define ARP_QUEUEING                   1
-
-/* ========================================================= */
-/* ================= SOCKET OPTIONS ========================= */
+/* Socket API                                                */
 /* ========================================================= */
 
 #define LWIP_NETCONN                   1
 #define LWIP_SOCKET                    1
-
-/*
- * select()
- */
 #define LWIP_SOCKET_SELECT             1
 
-/*
- * SO_RCVTIMEO / SO_SNDTIMEO
- */
 #define LWIP_SO_RCVTIMEO               1
 #define LWIP_SO_SNDTIMEO               1
 
-/*
- * SO_REUSEADDR
- */
 #define SO_REUSE                       1
-#define SO_REUSE_RXTOALL               1
-
-/*
- * errno support
- */
-//#define LWIP_PROVIDE_ERRNO             1
+#define SO_REUSE_RXTOALL               0
 
 /* ========================================================= */
-/* ================= NETIF API ============================== */
-/* ========================================================= */
-
-#define LWIP_NETIF_API                 1
-
-/* ========================================================= */
-/* ================= CORE LOCKING =========================== */
+/* Thread-safe API / core locking                            */
 /* ========================================================= */
 
 #define LWIP_TCPIP_CORE_LOCKING        1
 
 /* ========================================================= */
-/* ================= CHECKSUM OPTIONS ======================= */
+/* Checksum offload                                          */
 /* ========================================================= */
 
 /*
- * STM32 ETH hardware checksum offload.
+ * Core/Src/main.c configures ETH_TX_PACKETS_FEATURES_CSUM and the STM32 ETH
+ * MAC validates incoming IP/TCP/UDP checksums in hardware.
  */
-#define CHECKSUM_BY_HARDWARE
-
-#ifdef CHECKSUM_BY_HARDWARE
-
 #define CHECKSUM_GEN_IP                0
 #define CHECKSUM_GEN_UDP               0
 #define CHECKSUM_GEN_TCP               0
@@ -206,88 +156,43 @@
 #define CHECKSUM_CHECK_UDP             0
 #define CHECKSUM_CHECK_TCP             0
 
+/* ICMP is small and infrequent; keep software generation enabled. */
 #define CHECKSUM_GEN_ICMP              1
 #define CHECKSUM_CHECK_ICMP            0
 
-#else
-
-#define CHECKSUM_GEN_IP                1
-#define CHECKSUM_GEN_UDP               1
-#define CHECKSUM_GEN_TCP               1
-
-#define CHECKSUM_CHECK_IP              1
-#define CHECKSUM_CHECK_UDP             1
-#define CHECKSUM_CHECK_TCP             1
-
-#define CHECKSUM_GEN_ICMP              1
-#define CHECKSUM_CHECK_ICMP            1
-
-#endif
-
 /* ========================================================= */
-/* ================= HTTPD OPTIONS ========================== */
+/* Statistics / debug                                        */
 /* ========================================================= */
 
-#define HTTPD_USE_CUSTOM_FSDATA        1
-
-/*
- * HTTP/1.1 keepalive
- */
-#define LWIP_HTTPD_SUPPORT_11_KEEPALIVE 1
-
-/* ========================================================= */
-/* ================= DEBUG OPTIONS ========================== */
-/* ========================================================= */
-
-/*
- * Disable in production.
- */
 #define LWIP_STATS                     0
 
 /*
- * Enable only while debugging.
+ * Useful while chasing pool pressure:
+ *
+ * #define LWIP_STATS                   1
+ * #define LWIP_STATS_DISPLAY           1
+ * #define LWIP_DEBUG                   1
+ * #define MEM_DEBUG                    LWIP_DBG_ON
+ * #define MEMP_DEBUG                   LWIP_DBG_ON
+ * #define TCP_DEBUG                    LWIP_DBG_ON
  */
-// #define LWIP_DEBUG                   1
-// #define MEM_DEBUG                    LWIP_DBG_ON
-// #define MEMP_DEBUG                   LWIP_DBG_ON
-// #define TCP_DEBUG                    LWIP_DBG_ON
-// #define ETHARP_DEBUG                 LWIP_DBG_ON
 
 /* ========================================================= */
-/* ================= OS OPTIONS ============================= */
+/* RTOS sizing                                               */
 /* ========================================================= */
 
 #define TCPIP_THREAD_NAME              "TCP/IP"
-
-/*
- * HTTPS needs larger stack.
- */
 #define TCPIP_THREAD_STACKSIZE         4096
-
-/*
- * Larger mailbox sizes prevent congestion.
- */
-#define TCPIP_MBOX_SIZE                16
-
-#define DEFAULT_UDP_RECVMBOX_SIZE      16
-#define DEFAULT_TCP_RECVMBOX_SIZE      16
-#define DEFAULT_ACCEPTMBOX_SIZE        16
-
-#define TCP_LISTEN_BACKLOG 1
-#define TCP_DEFAULT_LISTEN_BACKLOG 128
-
-/*
- * Default worker stack.
- */
-#define DEFAULT_THREAD_STACKSIZE       4096
-
-/*
- * High priority for networking.
- */
 #define TCPIP_THREAD_PRIO              osPriorityHigh
 
+#define TCPIP_MBOX_SIZE                48
+#define DEFAULT_UDP_RECVMBOX_SIZE      12
+#define DEFAULT_TCP_RECVMBOX_SIZE      32
+#define DEFAULT_ACCEPTMBOX_SIZE        24
+#define DEFAULT_THREAD_STACKSIZE       4096
+
 /* ========================================================= */
-/* ================= MULTITHREAD CHECK ====================== */
+/* Multithreading diagnostics                                */
 /* ========================================================= */
 
 #define LWIP_CHECK_MULTITHREADING      0
