@@ -54,6 +54,13 @@
     return remaining + "s";
   }
 
+  function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + " MiB";
+    if (value >= 1024) return Math.round(value / 1024) + " KiB";
+    return value + " B";
+  }
+
   function setConnection(mode, label) {
     const pill = $("connection-state");
     pill.dataset.state = mode;
@@ -98,6 +105,12 @@
     state.outputs = data.outputs;
     $("uptime-value").textContent = formatUptime(data.uptime);
     $("input-value").textContent = data.input.active ? "High" : "Low";
+    if (data.heap) {
+      $("heap-free-value").textContent =
+        formatBytes(data.heap.free) + " / " + formatBytes(data.heap.total);
+      $("heap-low-value").textContent =
+        formatBytes(data.heap.minFree) + " min";
+    }
     $("last-updated").textContent = "Updated " + new Date().toLocaleTimeString();
     renderOutputs(data.outputs);
   }

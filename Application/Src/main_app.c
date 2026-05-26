@@ -243,7 +243,7 @@ static const output_t outputs[] = {
 
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define HTTPS_NO_REQUEST_TIMEOUT_MS 1000U
-#define HTTP_KEEPALIVE_TIMEOUT_MS 5000U
+#define HTTP_KEEPALIVE_TIMEOUT_MS 250U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_IDLE_TIMEOUT_MS       60000U
 #define WS_MAX_SEND_QUEUE        4096U
@@ -280,6 +280,21 @@ static uint8_t input_get(void)
 static uint32_t uptime_seconds(void)
 {
     return HAL_GetTick() / 1000U;
+}
+
+static size_t heap_total_bytes(void)
+{
+    return (size_t)configTOTAL_HEAP_SIZE;
+}
+
+static size_t heap_free_bytes(void)
+{
+    return xPortGetFreeHeapSize();
+}
+
+static size_t heap_min_free_bytes(void)
+{
+    return xPortGetMinimumEverFreeHeapSize();
 }
 
 static void ip4_to_str(const ip4_addr_t *addr, char *buf, size_t len)
@@ -529,6 +544,7 @@ static size_t make_state_json(char *buf, size_t len)
                             len,
                             "{"
                             "\"uptime\":%lu,"
+                            "\"heap\":{\"total\":%lu,\"free\":%lu,\"used\":%lu,\"minFree\":%lu,\"maxUsed\":%lu},"
                             "\"input\":{\"name\":\"m_IN_3\",\"pin\":\"PA3\",\"active\":%s},"
                             "\"outputs\":["
                             "{\"id\":0,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s},"
@@ -536,6 +552,11 @@ static size_t make_state_json(char *buf, size_t len)
                             "]"
                             "}",
                             (unsigned long)uptime_seconds(),
+                            (unsigned long)heap_total_bytes(),
+                            (unsigned long)heap_free_bytes(),
+                            (unsigned long)(heap_total_bytes() - heap_free_bytes()),
+                            (unsigned long)heap_min_free_bytes(),
+                            (unsigned long)(heap_total_bytes() - heap_min_free_bytes()),
                             input_get() ? "true" : "false",
                             outputs[0].name,
                             outputs[0].pin_name,
@@ -578,7 +599,7 @@ static size_t make_network_json(char *buf, size_t len)
 
 static void reply_state(struct mg_connection *c)
 {
-    char json[256];
+    char json[384];
     make_state_json(json, sizeof(json));
     mg_http_reply(c,
                   200,
@@ -606,7 +627,7 @@ static void reply_network(struct mg_connection *c)
 
 static void broadcast_state(struct mg_mgr *mgr)
 {
-    char json[256];
+    char json[384];
     size_t len = make_state_json(json, sizeof(json));
     struct mg_connection *conn;
 
@@ -894,7 +915,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_WS_OPEN)
     {
-        char json[256];
+        char json[384];
         size_t len = make_state_json(json, sizeof(json));
         mark_conn_activity(c);
         mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
@@ -914,7 +935,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         }
         else if (mg_match(wm->data, mg_str("state"), NULL))
         {
-            char json[256];
+            char json[384];
             size_t len = make_state_json(json, sizeof(json));
             mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
         }
