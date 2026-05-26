@@ -72,8 +72,6 @@ static void net_config_init_defaults(void)
     IP4_ADDR(&s_net_cfg.gateway, 192, 168, 100,  1);
 }
 
-#undef LWIP_DHCP
-
 #if LWIP_DHCP
 
 #define DHCP_OFF              (uint8_t) 0
@@ -93,22 +91,28 @@ void ethernet_link_status_updated(struct netif *netif)
     if (netif_is_up(netif))
     {
 #if LWIP_DHCP
-        DHCP_state = DHCP_START;
-#else
+        if (s_net_cfg.dhcp)
+        {
+            DHCP_state = DHCP_START;
+            return;
+        }
+#endif
         ip_addr_t ipaddr;
         char ip_str[16];
         ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
         ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
         printf("Static IPv4 address: %s\r\n", ip_str);
-#endif
     }
     else
     {
 #if LWIP_DHCP
-        DHCP_state = DHCP_LINK_DOWN;
-#else
-        printf("The network cable is not connected\r\n");
+        if (s_net_cfg.dhcp)
+        {
+            DHCP_state = DHCP_LINK_DOWN;
+            return;
+        }
 #endif
+        printf("The network cable is not connected\r\n");
     }
 }
 
@@ -184,15 +188,18 @@ static void InitLwip(void)
     tcpip_init(NULL, NULL);
     net_config_init_defaults();
 
-#if LWIP_DHCP
-    ip_addr_set_zero_ip4(&ipaddr);
-    ip_addr_set_zero_ip4(&netmask);
-    ip_addr_set_zero_ip4(&gw);
-#else
-    ip_addr_copy_from_ip4(ipaddr, s_net_cfg.ip);
-    ip_addr_copy_from_ip4(netmask, s_net_cfg.netmask);
-    ip_addr_copy_from_ip4(gw, s_net_cfg.gateway);
-#endif
+    if (s_net_cfg.dhcp)
+    {
+        ip_addr_set_zero_ip4(&ipaddr);
+        ip_addr_set_zero_ip4(&netmask);
+        ip_addr_set_zero_ip4(&gw);
+    }
+    else
+    {
+        ip_addr_copy_from_ip4(ipaddr, s_net_cfg.ip);
+        ip_addr_copy_from_ip4(netmask, s_net_cfg.netmask);
+        ip_addr_copy_from_ip4(gw, s_net_cfg.gateway);
+    }
 
     netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL, &ethernetif_init, &tcpip_input);
     netif_set_default(&gnetif);
