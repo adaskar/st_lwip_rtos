@@ -51,6 +51,9 @@ add_subdirectory(Custom_Middlewares/Third_Party/mbedtls)
 # Add Mongoose middleware
 add_subdirectory(Custom_Middlewares/Third_Party/mongoose)
 
+# Add LibOSDP middleware
+add_subdirectory(Custom_Middlewares/Third_Party/libosdp)
+
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
@@ -60,6 +63,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     ${CMAKE_CURRENT_SOURCE_DIR}/Application/Src/main_app.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Application/Src/osdp_pd_sample.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Application/Src/web_root.c
 )
 

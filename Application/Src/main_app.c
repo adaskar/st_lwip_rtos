@@ -11,6 +11,7 @@
 #include "lwip/dhcp.h"
 #include "lwip/netifapi.h"
 #include "mongoose.h"
+#include "osdp_pd_sample.h"
 
 extern UART_HandleTypeDef huart3;
 
@@ -1024,6 +1025,8 @@ void main_app(void *arg)
     (void)arg;
 
     InitLwip();
+
+    osdp_pd_sample_start();
 
     ostHTTPS = osThreadNew(https_server_task, NULL, &osaHTTPS);
 

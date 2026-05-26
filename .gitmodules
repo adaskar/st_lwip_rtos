@@ -10,3 +10,6 @@
 [submodule "Custom_Middlewares/Third_Party/mongoose/mongoose"]
 	path = Custom_Middlewares/Third_Party/mongoose/mongoose
 	url = https://github.com/cesanta/mongoose.git
+[submodule "Custom_Middlewares/Third_Party/libosdp/libosdp"]
+	path = Custom_Middlewares/Third_Party/libosdp/libosdp
+	url = https://github.com/goTomain/libosdp.git
