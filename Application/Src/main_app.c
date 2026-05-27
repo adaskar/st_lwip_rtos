@@ -242,8 +242,11 @@ static const output_t outputs[] = {
 };
 
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
-#define HTTPS_NO_REQUEST_TIMEOUT_MS 1000U
+#define HTTPS_NO_REQUEST_TIMEOUT_MS 500U
 #define HTTP_KEEPALIVE_TIMEOUT_MS 250U
+#define HTTPS_PRE_REQUEST_GUARD 1
+#define HTTPS_MAX_PRE_REQUEST_CONNS 3U
+#define HTTPS_PRE_REQUEST_LOW_HEAP_BYTES (96U * 1024U)
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_IDLE_TIMEOUT_MS       60000U
 #define WS_MAX_SEND_QUEUE        4096U
@@ -353,6 +356,37 @@ static bool http_connection_is_idle(struct mg_connection *c,
            c->send.len == 0 &&
            elapsed_since(state->last_activity_at) > timeout_ms;
 }
+
+#if HTTPS_PRE_REQUEST_GUARD
+static bool https_connection_has_no_request(struct mg_connection *c)
+{
+    return conn_state(c)->request_count == 0U;
+}
+
+static bool https_connection_is_pre_request(struct mg_connection *c)
+{
+    return c->is_accepted &&
+           c->is_tls &&
+           !c->is_websocket &&
+           !c->is_closing &&
+           https_connection_has_no_request(c);
+}
+
+static size_t count_https_pre_request_conns(struct mg_mgr *mgr,
+                                            struct mg_connection *except)
+{
+    size_t count = 0;
+    struct mg_connection *conn;
+
+    for (conn = mgr->conns; conn != NULL; conn = conn->next)
+    {
+        if (conn != except && https_connection_is_pre_request(conn))
+            count++;
+    }
+
+    return count;
+}
+#endif
 
 static void mongoose_log_filter(char ch, void *param)
 {
@@ -737,8 +771,21 @@ static void start_tls(struct mg_connection *c)
 {
     struct mg_tls_opts opts;
 
-    memset(&opts, 0, sizeof(opts));
     init_conn_state(c);
+
+#if HTTPS_PRE_REQUEST_GUARD
+    if (heap_free_bytes() < HTTPS_PRE_REQUEST_LOW_HEAP_BYTES &&
+        count_https_pre_request_conns(c->mgr, c) >= HTTPS_MAX_PRE_REQUEST_CONNS)
+    {
+        printf("HTTPS low-heap pre-request rejected conn=%lu free=%lu\r\n",
+               c->id,
+               (unsigned long)heap_free_bytes());
+        c->is_closing = 1;
+        return;
+    }
+#endif
+
+    memset(&opts, 0, sizeof(opts));
     opts.cert = mg_str((const char *)cert_pem);
     opts.key = mg_str((const char *)key_pem);
     printf("HTTPS client connected conn=%lu\r\n", c->id);
@@ -991,6 +1038,14 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             c->is_closing = 1;
         }
+#if HTTPS_PRE_REQUEST_GUARD
+        else if (https_connection_has_no_request(c) &&
+                 count_https_pre_request_conns(c->mgr, c) >= HTTPS_MAX_PRE_REQUEST_CONNS &&
+                 elapsed_since(state->last_activity_at) > HTTPS_NO_REQUEST_TIMEOUT_MS)
+        {
+            c->is_draining = 1;
+        }
+#endif
         else if (http_connection_is_idle(c, state))
         {
             c->is_draining = 1;
