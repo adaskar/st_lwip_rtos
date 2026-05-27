@@ -6,7 +6,7 @@
   <title>Device Dashboard</title>
   <link rel="icon" href="data:,">
   <link rel="apple-touch-icon" href="data:,">
-  <script defer src="/assets/ui.js?v=2"></script>
+  <script defer src="/assets/ui.js?v=3"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -73,6 +73,50 @@
               <h3 id="outputs-title">Outputs</h3>
             </div>
             <div id="outputs-list" class="outputs-list"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="ethernet-title">
+            <div class="panel-heading">
+              <h3 id="ethernet-title">Ethernet</h3>
+            </div>
+            <div class="stats-grid">
+              <div class="stat-cell">
+                <span>RX packets</span>
+                <strong id="eth-rx-packets">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>RX dropped</span>
+                <strong id="eth-rx-dropped">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>RX alloc errors</span>
+                <strong id="eth-rx-alloc-errors">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>TX packets</span>
+                <strong id="eth-tx-packets">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>TX errors</span>
+                <strong id="eth-tx-errors">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>TX busy drops</span>
+                <strong id="eth-tx-busy-drops">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>DMA errors</span>
+                <strong id="eth-dma-errors">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>Link up</span>
+                <strong id="eth-link-up-count">--</strong>
+              </div>
+              <div class="stat-cell">
+                <span>Link down</span>
+                <strong id="eth-link-down-count">--</strong>
+              </div>
+            </div>
           </section>
 
           <section class="panel" aria-labelledby="event-log-title">

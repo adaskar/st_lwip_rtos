@@ -644,11 +644,26 @@ static void handle_logout(struct mg_connection *c)
 
 static size_t make_state_json(char *buf, size_t len)
 {
+    ethernetif_stats_t eth;
+
+    ethernetif_get_stats(&eth);
+
     int n = snprintf(buf,
                      len,
                      "{"
                      "\"uptime\":%lu,"
                      "\"heap\":{\"total\":%lu,\"free\":%lu,\"used\":%lu,\"minFree\":%lu,\"maxUsed\":%lu},"
+                     "\"ethernet\":{"
+                     "\"rxPackets\":%lu,"
+                     "\"rxDropped\":%lu,"
+                     "\"rxAllocErrors\":%lu,"
+                     "\"txPackets\":%lu,"
+                     "\"txErrors\":%lu,"
+                     "\"txBusyDrops\":%lu,"
+                     "\"dmaErrors\":%lu,"
+                     "\"linkUpCount\":%lu,"
+                     "\"linkDownCount\":%lu"
+                     "},"
                      "\"input\":{\"name\":\"m_IN_3\",\"pin\":\"PA3\",\"active\":%s},"
                      "\"outputs\":["
                      "{\"id\":0,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s},"
@@ -661,6 +676,15 @@ static size_t make_state_json(char *buf, size_t len)
                      (unsigned long)(heap_total_bytes() - heap_free_bytes()),
                      (unsigned long)heap_min_free_bytes(),
                      (unsigned long)(heap_total_bytes() - heap_min_free_bytes()),
+                     (unsigned long)eth.rx_packets,
+                     (unsigned long)eth.rx_dropped,
+                     (unsigned long)eth.rx_alloc_errors,
+                     (unsigned long)eth.tx_packets,
+                     (unsigned long)eth.tx_errors,
+                     (unsigned long)eth.tx_busy_drops,
+                     (unsigned long)eth.dma_errors,
+                     (unsigned long)eth.link_up_count,
+                     (unsigned long)eth.link_down_count,
                      input_get() ? "true" : "false",
                      outputs[0].name,
                      outputs[0].pin_name,
@@ -753,7 +777,7 @@ static void reply_device_info(struct mg_connection *c)
 
 static void reply_state(struct mg_connection *c)
 {
-    char json[384];
+    char json[768];
     make_state_json(json, sizeof(json));
     mg_http_reply(c,
                   200,
@@ -781,7 +805,7 @@ static void reply_network(struct mg_connection *c)
 
 static void broadcast_state(struct mg_mgr *mgr)
 {
-    char json[384];
+    char json[768];
     size_t len = make_state_json(json, sizeof(json));
     struct mg_connection *conn;
 
@@ -1106,7 +1130,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_WS_OPEN)
     {
-        char json[384];
+        char json[768];
         size_t len = make_state_json(json, sizeof(json));
         mark_conn_activity(c);
 #if HTTPS_DRAIN_HTTP_ON_WS_OPEN
@@ -1129,7 +1153,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         }
         else if (mg_match(wm->data, mg_str("state"), NULL))
         {
-            char json[384];
+            char json[768];
             size_t len = make_state_json(json, sizeof(json));
             mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
         }

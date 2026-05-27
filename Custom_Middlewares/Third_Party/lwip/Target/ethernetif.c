@@ -446,10 +446,7 @@ static struct pbuf * low_level_input(struct netif *netif)
 
   if(rx_alloc_status_get() == RX_ALLOC_OK)
   {
-    if(HAL_ETH_ReadData(&EthHandle, (void **)&p) != HAL_OK)
-    {
-      EthStats.rx_dropped++;
-    }
+    (void)HAL_ETH_ReadData(&EthHandle, (void **)&p);
   }
 
   return p;
