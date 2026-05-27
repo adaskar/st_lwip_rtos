@@ -247,6 +247,8 @@ static const output_t outputs[] = {
 #define HTTPS_PRE_REQUEST_GUARD 1
 #define HTTPS_MAX_PRE_REQUEST_CONNS 3U
 #define HTTPS_PRE_REQUEST_LOW_HEAP_BYTES (96U * 1024U)
+#define HTTPS_DRAIN_HTTP_ON_WS_OPEN 1
+#define WS_MAX_CLIENTS            4U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_IDLE_TIMEOUT_MS       60000U
 #define WS_MAX_SEND_QUEUE        4096U
@@ -388,6 +390,45 @@ static size_t count_https_pre_request_conns(struct mg_mgr *mgr,
 }
 #endif
 
+#if HTTPS_DRAIN_HTTP_ON_WS_OPEN
+static void drain_non_ws_https(struct mg_mgr *mgr, struct mg_connection *except)
+{
+    struct mg_connection *conn;
+
+    for (conn = mgr->conns; conn != NULL; conn = conn->next)
+    {
+        if (conn != except &&
+            conn->is_accepted &&
+            conn->is_tls &&
+            !conn->is_websocket &&
+            !conn->is_tls_hs &&
+            !conn->is_closing)
+        {
+            conn->is_draining = 1;
+        }
+    }
+}
+#endif
+
+static size_t count_ws_clients(struct mg_mgr *mgr, struct mg_connection *except)
+{
+    size_t count = 0;
+    struct mg_connection *conn;
+
+    for (conn = mgr->conns; conn != NULL; conn = conn->next)
+    {
+        if (conn != except &&
+            conn->is_accepted &&
+            conn->is_websocket &&
+            !conn->is_closing)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
 static void mongoose_log_filter(char ch, void *param)
 {
     static char line[160];
@@ -495,16 +536,23 @@ static void serve_web_file(struct mg_connection *c,
                            const char *path,
                            bool no_store)
 {
+    char headers[96];
     struct mg_http_serve_opts opts = {
         .root_dir = "/web_root",
-        .extra_headers = no_store ?
-            "Cache-Control: no-store\r\n" :
-            "Cache-Control: no-cache\r\n",
+        .extra_headers = headers,
         .fs = &mg_fs_packed,
     };
 
+    mg_snprintf(headers,
+                sizeof(headers),
+                "%s"
+                "Connection: close\r\n",
+                no_store ?
+                    "Cache-Control: no-store\r\n" :
+                    "Cache-Control: max-age=86400\r\n");
     mg_mem_files = mg_packed_files;
     mg_http_serve_file(c, hm, path, &opts);
+    c->is_draining = 1;
 }
 
 static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
@@ -891,8 +939,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             mg_http_reply(c,
                           204,
-                          "Cache-Control: max-age=86400\r\n",
+                          "Cache-Control: max-age=86400\r\n"
+                          "Connection: close\r\n",
                           "");
+            c->is_draining = 1;
         }
         else if (!authed)
         {
@@ -946,6 +996,18 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         }
         else if (mg_match(hm->uri, mg_str("/ws"), NULL))
         {
+            if (count_ws_clients(c->mgr, c) >= WS_MAX_CLIENTS)
+            {
+                mg_http_reply(c,
+                              503,
+                              "Content-Type: application/json\r\n"
+                              "Cache-Control: no-store\r\n"
+                              "Connection: close\r\n",
+                              "{\"error\":\"too many websocket clients\"}\n");
+                c->is_draining = 1;
+                return;
+            }
+
             conn_state(c)->authenticated = true;
             mg_ws_upgrade(c, hm, NULL);
         }
@@ -965,6 +1027,9 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         char json[384];
         size_t len = make_state_json(json, sizeof(json));
         mark_conn_activity(c);
+#if HTTPS_DRAIN_HTTP_ON_WS_OPEN
+        drain_non_ws_https(c->mgr, c);
+#endif
         mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
         len = make_network_json(json, sizeof(json));
         mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);

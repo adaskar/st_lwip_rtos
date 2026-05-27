@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Device Dashboard</title>
-  <link rel="stylesheet" href="/assets/styles.css">
-  <script defer src="/assets/app.js"></script>
+  <link rel="icon" href="data:,">
+  <link rel="apple-touch-icon" href="data:,">
+  <script defer src="/assets/ui.js?v=2"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -23,6 +24,7 @@
           <span class="status-dot" aria-hidden="true"></span>
           <span id="connection-label">Connecting</span>
         </div>
+        <button id="retry-live-button" class="button compact" type="button" hidden>Retry</button>
         <button id="logout-button" class="button ghost" type="button">Logout</button>
       </div>
     </header>
