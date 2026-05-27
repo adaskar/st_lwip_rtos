@@ -271,6 +271,8 @@ static const output_t outputs[] = {
 #define AUTH_COOKIE              "st_auth=1071"
 #define AUTH_TOKEN               "1071"
 
+#define DEVICE_INFO_READ_FACTORY_UID 1
+
 typedef struct
 {
     uint32_t handshake_started_at;
@@ -282,6 +284,33 @@ typedef struct
 
 _Static_assert(sizeof(conn_state_t) <= MG_DATA_SIZE,
                "conn_state_t exceeds mg_connection.data[]");
+
+static char s_factory_uid[25] = "unavailable";
+
+static void factory_uid_read_once(void)
+{
+#if DEVICE_INFO_READ_FACTORY_UID
+    uint32_t uid0, uid1, uid2;
+    uint32_t icache_was_enabled = HAL_ICACHE_IsEnabled();
+
+    if (icache_was_enabled != 0U)
+        (void)HAL_ICACHE_Disable();
+
+    uid0 = *(volatile uint32_t *)(UID_BASE + 0U);
+    uid1 = *(volatile uint32_t *)(UID_BASE + 4U);
+    uid2 = *(volatile uint32_t *)(UID_BASE + 8U);
+
+    if (icache_was_enabled != 0U)
+        (void)HAL_ICACHE_Enable();
+
+    (void)snprintf(s_factory_uid,
+                   sizeof(s_factory_uid),
+                   "%08lX%08lX%08lX",
+                   (unsigned long)uid0,
+                   (unsigned long)uid1,
+                   (unsigned long)uid2);
+#endif
+}
 
 static uint8_t output_get(size_t id)
 {
@@ -738,20 +767,19 @@ static size_t make_network_json(char *buf, size_t len)
 static void reply_device_info(struct mg_connection *c)
 {
     char json[256];
-    int n = snprintf(json,
-                     sizeof(json),
-                     "{"
-                     "\"device\":\"STM32H573\","
-                     "\"fw\":\"%s\","
-                     "\"mongoose\":\"%s\","
-                     "\"uid\":\"%08lX%08lX%08lX\""
-                     "}",
-                     FW_VERSION,
-                     MG_VERSION,
-                     (unsigned long)HAL_GetUIDw0(),
-                     (unsigned long)HAL_GetUIDw1(),
-                     (unsigned long)HAL_GetUIDw2());
-
+    int n;
+    
+    n = snprintf(json,
+                    sizeof(json),
+                    "{"
+                    "\"device\":\"STM32H573\","
+                    "\"fw\":\"%s\","
+                    "\"mongoose\":\"%s\","
+                    "\"uid\":\"%s\""
+                    "}",
+                    FW_VERSION,
+                    MG_VERSION,
+                    s_factory_uid);
     if (n < 0 || (size_t)n >= sizeof(json))
     {
         mg_http_reply(c,
@@ -1288,6 +1316,8 @@ void main_app(void *arg)
 
     s_net_ready_evt = osEventFlagsNew(NULL);
     configASSERT(s_net_ready_evt != NULL);
+
+    factory_uid_read_once();
 
     InitLwip();
 
