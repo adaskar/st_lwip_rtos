@@ -62,7 +62,7 @@
 #define LINK_SPEED_OF_YOUR_NETIF_IN_BPS 100000000U
 
 #define ETH_RX_BUFFER_SIZE            1536U
-#define ETH_RX_BUFFER_CNT             16U
+#define ETH_RX_BUFFER_CNT             24U
 #define ETH_TX_BUFFER_CNT             ETH_TX_DESC_CNT
 
 /* Private macro -------------------------------------------------------------*/
