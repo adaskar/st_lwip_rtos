@@ -273,6 +273,16 @@ static const output_t outputs[] = {
 
 #define DEVICE_INFO_READ_FACTORY_UID 1
 
+#define HTTP_HDR_JSON_CLOSE       "Content-Type: application/json\r\n" \
+                                  "Cache-Control: no-store\r\n" \
+                                  "Connection: close\r\n"
+#define HTTP_HDR_TEXT_NOSTORE     "Content-Type: text/plain; charset=utf-8\r\n" \
+                                  "Cache-Control: no-store\r\n"
+#define HTTP_HDR_CACHE_CLOSE      "Cache-Control: max-age=86400\r\n" \
+                                  "Connection: close\r\n"
+#define HTTP_HDR_NOSTORE          "Cache-Control: no-store\r\n"
+#define HTTP_HDR_CLOSE            "Connection: close\r\n"
+
 typedef struct
 {
     uint32_t handshake_started_at;
@@ -535,16 +545,37 @@ static bool request_is_authenticated(struct mg_http_message *hm)
     return false;
 }
 
+static void reply_text_close(struct mg_connection *c,
+                             int status,
+                             const char *headers,
+                             const char *body)
+{
+    mg_http_reply(c, status, headers, "%s", body);
+    c->is_draining = 1;
+}
+
+static void reply_json_close(struct mg_connection *c, int status, const char *json)
+{
+    reply_text_close(c, status, HTTP_HDR_JSON_CLOSE, json);
+}
+
+static void reply_json_close_with_headers(struct mg_connection *c,
+                                          int status,
+                                          const char *extra_headers,
+                                          const char *json)
+{
+    char headers[192];
+
+    mg_snprintf(headers,
+                sizeof(headers),
+                HTTP_HDR_JSON_CLOSE "%s",
+                extra_headers);
+    reply_text_close(c, status, headers, json);
+}
+
 static void reply_unauthorized(struct mg_connection *c)
 {
-    mg_http_reply(c,
-                  401,
-                  "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
-                  "%s",
-                  "{\"error\":\"unauthorized\"}");
-    c->is_draining = 1;
+    reply_json_close(c, 401, "{\"error\":\"unauthorized\"}");
 }
 
 static bool uri_has_prefix(struct mg_str uri, const char *prefix)
@@ -560,8 +591,7 @@ static void redirect_to_path(struct mg_connection *c, const char *path)
 
     mg_snprintf(headers,
                 sizeof(headers),
-                "Location: %s\r\n"
-                "Cache-Control: no-store\r\n",
+                "Location: %s\r\n" HTTP_HDR_NOSTORE,
                 path);
     mg_http_reply(c, 303, headers, "%s", "");
 }
@@ -593,11 +623,8 @@ static void serve_web_file(struct mg_connection *c,
 
     mg_snprintf(headers,
                 sizeof(headers),
-                "%s"
-                "Connection: close\r\n",
-                no_store ?
-                    "Cache-Control: no-store\r\n" :
-                    "Cache-Control: max-age=86400\r\n");
+                "%s" HTTP_HDR_CLOSE,
+                no_store ? HTTP_HDR_NOSTORE : "Cache-Control: max-age=86400\r\n");
     mg_http_serve_file(c, hm, path, &opts);
     c->is_draining = 1;
 }
@@ -613,12 +640,7 @@ static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
                     (int)hm->uri.len,
                     hm->uri.buf) >= sizeof(path))
     {
-        mg_http_reply(c,
-                      400,
-                      "Content-Type: text/plain; charset=utf-8\r\n"
-                      "Cache-Control: no-store\r\n",
-                      "%s",
-                      "bad request");
+        mg_http_reply(c, 400, HTTP_HDR_TEXT_NOSTORE, "%s", "bad request");
         return;
     }
 
@@ -635,40 +657,25 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
 
     if (ok)
     {
-        mg_http_reply(c,
-                      200,
-                      "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n"
-                      "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
-                      "%s",
-                      "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}");
-        c->is_draining = 1;
+        reply_json_close_with_headers(
+            c,
+            200,
+            "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
+            "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}");
     }
     else
     {
-        mg_http_reply(c,
-                      403,
-                      "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n",
-                      "%s",
-                      "{\"error\":\"bad password\"}");
-        c->is_draining = 1;
+        reply_json_close(c, 403, "{\"error\":\"bad password\"}");
     }
 }
 
 static void handle_logout(struct mg_connection *c)
 {
-    mg_http_reply(c,
-                  200,
-                  "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n"
-                  "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
-                  "%s",
-                  "{\"ok\":true}");
-    c->is_draining = 1;
+    reply_json_close_with_headers(
+        c,
+        200,
+        "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
+        "{\"ok\":true}");
 }
 
 static size_t make_state_json(char *buf, size_t len)
@@ -779,68 +786,39 @@ static size_t make_network_json(char *buf, size_t len)
 static void reply_device_info(struct mg_connection *c)
 {
     char json[256];
-    int n;
-    
-    n = snprintf(json,
-                    sizeof(json),
-                    "{"
-                    "\"device\":\"STM32H573\","
-                    "\"fw\":\"%s\","
-                    "\"mongoose\":\"%s\","
-                    "\"uid\":\"%s\""
-                    "}",
-                    FW_VERSION,
-                    MG_VERSION,
-                    s_factory_uid);
+    int n = snprintf(json,
+                     sizeof(json),
+                     "{"
+                     "\"device\":\"STM32H573\","
+                     "\"fw\":\"%s\","
+                     "\"mongoose\":\"%s\","
+                     "\"uid\":\"%s\""
+                     "}",
+                     FW_VERSION,
+                     MG_VERSION,
+                     s_factory_uid);
+
     if (n < 0 || (size_t)n >= sizeof(json))
     {
-        mg_http_reply(c,
-                      500,
-                      "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n",
-                      "%s",
-                      "{\"error\":\"overflow\"}");
-        c->is_draining = 1;
+        reply_json_close(c, 500, "{\"error\":\"overflow\"}");
         return;
     }
 
-    mg_http_reply(c,
-                  200,
-                  "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
-                  "%s",
-                  json);
-    c->is_draining = 1;
+    reply_json_close(c, 200, json);
 }
 
 static void reply_state(struct mg_connection *c)
 {
     char json[1024];
     make_state_json(json, sizeof(json));
-    mg_http_reply(c,
-                  200,
-                  "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
-                  "%s",
-                  json);
-    c->is_draining = 1;
+    reply_json_close(c, 200, json);
 }
 
 static void reply_network(struct mg_connection *c)
 {
     char json[256];
     make_network_json(json, sizeof(json));
-    mg_http_reply(c,
-                  200,
-                  "Content-Type: application/json\r\n"
-                  "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n",
-                  "%s",
-                  json);
-    c->is_draining = 1;
+    reply_json_close(c, 200, json);
 }
 
 static void broadcast_state(struct mg_mgr *mgr)
@@ -875,14 +853,9 @@ static void handle_output_update(struct mg_connection *c,
     if (id < 0 || id >= (long)(sizeof(outputs) / sizeof(outputs[0])) ||
         !mg_json_get_bool(hm->body, "$.on", &on))
     {
-        mg_http_reply(c,
-                      400,
-                      "Content-Type: application/json\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n",
-                      "%s",
-                      "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}");
-        c->is_draining = 1;
+        reply_json_close(c,
+                         400,
+                         "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}");
         return;
     }
 
@@ -1009,6 +982,155 @@ static void redirect_to_https(struct mg_connection *c, struct mg_http_message *h
                   "Redirecting to HTTPS");
 }
 
+static void handle_network_request(struct mg_connection *c, struct mg_http_message *hm)
+{
+    if (mg_strcasecmp(hm->method, mg_str("POST")) == 0)
+    {
+        if (!apply_network_config(hm->body))
+        {
+            reply_json_close(c, 400, "{\"error\":\"invalid network config\"}");
+            return;
+        }
+    }
+
+    reply_network(c);
+}
+
+static void handle_ws_request(struct mg_connection *c, struct mg_http_message *hm)
+{
+    if (count_ws_clients(c->mgr, c) >= WS_MAX_CLIENTS)
+    {
+        reply_json_close(c, 503, "{\"error\":\"too many websocket clients\"}");
+        return;
+    }
+
+    conn_state(c)->authenticated = true;
+    mg_ws_upgrade(c, hm, NULL);
+}
+
+static bool handle_public_request(struct mg_connection *c,
+                                  struct mg_http_message *hm,
+                                  bool authed)
+{
+    if (mg_match(hm->uri, mg_str("/"), NULL))
+    {
+        serve_web_file(c,
+                       hm,
+                       authed ? "/web_root/dashboard.html" : "/web_root/login.html",
+                       true);
+    }
+    else if (mg_match(hm->uri, mg_str("/api/login"), NULL))
+    {
+        handle_login(c, hm);
+    }
+    else if (mg_match(hm->uri, mg_str("/api/info"), NULL))
+    {
+        reply_device_info(c);
+    }
+    else if (mg_match(hm->uri, mg_str("/login.html"), NULL))
+    {
+        if (authed)
+            redirect_to_path(c, "/");
+        else
+            serve_web_file(c, hm, "/web_root/login.html", true);
+    }
+    else if (uri_has_prefix(hm->uri, "/assets/"))
+    {
+        serve_web_asset(c, hm);
+    }
+    else if (mg_match(hm->uri, mg_str("/favicon.ico"), NULL) ||
+             mg_match(hm->uri, mg_str("/apple-touch-icon*"), NULL))
+    {
+        reply_text_close(c, 204, HTTP_HDR_CACHE_CLOSE, "");
+    }
+    else
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static void handle_unauthenticated_request(struct mg_connection *c,
+                                           struct mg_http_message *hm)
+{
+    printf("Unauthorized HTTPS request: %.*s\r\n",
+           (int)hm->uri.len,
+           hm->uri.buf);
+
+    if (mg_match(hm->uri, mg_str("/dashboard.html"), NULL) ||
+        uri_has_prefix(hm->uri, "/config/"))
+    {
+        redirect_to_path(c, "/login.html");
+    }
+    else
+    {
+        reply_unauthorized(c);
+    }
+}
+
+static void handle_authenticated_request(struct mg_connection *c,
+                                         struct mg_http_message *hm)
+{
+    if (mg_match(hm->uri, mg_str("/dashboard.html"), NULL) ||
+        uri_has_prefix(hm->uri, "/config/"))
+    {
+        serve_web_file(c, hm, "/web_root/dashboard.html", true);
+    }
+    else if (mg_match(hm->uri, mg_str("/api/logout"), NULL))
+    {
+        handle_logout(c);
+    }
+    else if (mg_match(hm->uri, mg_str("/api/state"), NULL))
+    {
+        reply_state(c);
+    }
+    else if (mg_match(hm->uri, mg_str("/api/output"), NULL))
+    {
+        handle_output_update(c, hm, c->mgr);
+    }
+    else if (mg_match(hm->uri, mg_str("/api/network"), NULL))
+    {
+        handle_network_request(c, hm);
+    }
+    else if (mg_match(hm->uri, mg_str("/ws"), NULL))
+    {
+        handle_ws_request(c, hm);
+    }
+    else
+    {
+        reply_json_close(c, 404, "{\"error\":\"not found\"}");
+    }
+}
+
+static void handle_https_http_msg(struct mg_connection *c,
+                                  struct mg_http_message *hm)
+{
+    bool authed = request_is_authenticated(hm);
+    conn_state_t *state = conn_state(c);
+
+    state->request_count++;
+    mark_conn_activity(c);
+
+    printf("HTTPS request conn=%lu: %.*s %.*s (%lu bytes) sendq=%lu recvq=%lu\r\n",
+           c->id,
+           (int)hm->method.len,
+           hm->method.buf,
+           (int)hm->uri.len,
+           hm->uri.buf,
+           (unsigned long)hm->message.len,
+           (unsigned long)c->send.len,
+           (unsigned long)c->recv.len);
+
+    if (handle_public_request(c, hm, authed))
+        return;
+
+    if (!authed)
+        handle_unauthenticated_request(c, hm);
+    else
+        handle_authenticated_request(c, hm);
+}
+
 static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 {
     if (ev == MG_EV_HTTP_MSG)
@@ -1033,140 +1155,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_HTTP_MSG)
     {
-        struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-        bool authed = request_is_authenticated(hm);
-        conn_state_t *state = conn_state(c);
-
-        state->request_count++;
-        mark_conn_activity(c);
-
-        printf("HTTPS request conn=%lu: %.*s %.*s (%lu bytes) sendq=%lu recvq=%lu\r\n",
-               c->id,
-               (int)hm->method.len,
-               hm->method.buf,
-               (int)hm->uri.len,
-               hm->uri.buf,
-               (unsigned long)hm->message.len,
-               (unsigned long)c->send.len,
-               (unsigned long)c->recv.len);
-
-        if (mg_match(hm->uri, mg_str("/"), NULL))
-        {
-            serve_web_file(c,
-                           hm,
-                           authed ? "/web_root/dashboard.html" : "/web_root/login.html",
-                           true);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/login"), NULL))
-        {
-            handle_login(c, hm);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/info"), NULL))
-        {
-            reply_device_info(c);
-        }
-        else if (mg_match(hm->uri, mg_str("/login.html"), NULL))
-        {
-            if (authed)
-                redirect_to_path(c, "/");
-            else
-                serve_web_file(c, hm, "/web_root/login.html", true);
-        }
-        else if (uri_has_prefix(hm->uri, "/assets/"))
-        {
-            serve_web_asset(c, hm);
-        }
-        else if (mg_match(hm->uri, mg_str("/favicon.ico"), NULL) ||
-                 mg_match(hm->uri, mg_str("/apple-touch-icon*"), NULL))
-        {
-            mg_http_reply(c,
-                          204,
-                          "Cache-Control: max-age=86400\r\n"
-                          "Connection: close\r\n",
-                          "%s",
-                          "");
-            c->is_draining = 1;
-        }
-        else if (!authed)
-        {
-            printf("Unauthorized HTTPS request: %.*s\r\n",
-                   (int)hm->uri.len,
-                   hm->uri.buf);
-            if (mg_match(hm->uri, mg_str("/dashboard.html"), NULL) ||
-                uri_has_prefix(hm->uri, "/config/"))
-            {
-                redirect_to_path(c, "/login.html");
-            }
-            else
-            {
-                reply_unauthorized(c);
-            }
-        }
-        else if (mg_match(hm->uri, mg_str("/dashboard.html"), NULL) ||
-                 uri_has_prefix(hm->uri, "/config/"))
-        {
-            serve_web_file(c, hm, "/web_root/dashboard.html", true);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/logout"), NULL))
-        {
-            handle_logout(c);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/state"), NULL))
-        {
-            reply_state(c);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/output"), NULL))
-        {
-            handle_output_update(c, hm, c->mgr);
-        }
-        else if (mg_match(hm->uri, mg_str("/api/network"), NULL))
-        {
-            if (mg_strcasecmp(hm->method, mg_str("POST")) == 0)
-            {
-                if (!apply_network_config(hm->body))
-                {
-                    mg_http_reply(c,
-                                  400,
-                                  "Content-Type: application/json\r\n"
-                                  "Cache-Control: no-store\r\n"
-                                  "Connection: close\r\n",
-                                  "%s",
-                                  "{\"error\":\"invalid network config\"}");
-                    c->is_draining = 1;
-                    return;
-                }
-            }
-            reply_network(c);
-        }
-        else if (mg_match(hm->uri, mg_str("/ws"), NULL))
-        {
-            if (count_ws_clients(c->mgr, c) >= WS_MAX_CLIENTS)
-            {
-                mg_http_reply(c,
-                              503,
-                              "Content-Type: application/json\r\n"
-                              "Cache-Control: no-store\r\n"
-                              "Connection: close\r\n",
-                              "%s",
-                              "{\"error\":\"too many websocket clients\"}");
-                c->is_draining = 1;
-                return;
-            }
-
-            conn_state(c)->authenticated = true;
-            mg_ws_upgrade(c, hm, NULL);
-        }
-        else
-        {
-            mg_http_reply(c,
-                          404,
-                          "Content-Type: application/json\r\n"
-                          "Cache-Control: no-store\r\n"
-                          "Connection: close\r\n",
-                          "%s",
-                          "{\"error\":\"not found\"}");
-            c->is_draining = 1;
-        }
+        handle_https_http_msg(c, (struct mg_http_message *)ev_data);
     }
     else if (ev == MG_EV_WS_OPEN)
     {
