@@ -39,12 +39,12 @@
 /*
  * ethernetif.c uses a separate custom RX pool:
  *   ETH_RX_BUFFER_SIZE = 1536
- *   ETH_RX_BUFFER_CNT  = 16
+ *   ETH_RX_BUFFER_CNT  = 12
  *
  * Keep PBUF_POOL_BUFSIZE at full Ethernet frame size so internally allocated
  * pbufs do not fragment normal TCP/MSS-sized traffic.
  */
-#define PBUF_POOL_SIZE                 32
+#define PBUF_POOL_SIZE                 24
 #define PBUF_POOL_BUFSIZE              1536
 #define LWIP_SUPPORT_CUSTOM_PBUF       1
 
@@ -53,23 +53,24 @@
 /* ========================================================= */
 
 /*
- * Mongoose uses the socket API. Each socket consumes a netconn; the HTTP and
- * HTTPS listeners also consume resources. Size for at least 8 simultaneous
- * dashboard clients: one WebSocket plus a small number of keep-alive HTTP
- * sockets per browser, with headroom for icons/API retries.
+ * Mongoose uses the socket API. Size this profile from the production network
+ * contract in docs/network-memory-paths.md:
+ * - 4 dashboard WebSocket clients
+ * - 1 OSDP TCP/TLS client
+ * - bounded short-lived HTTPS/HTTP request and handshake concurrency
  */
-#define MEMP_NUM_NETCONN               40
-#define MEMP_NUM_NETBUF                40
+#define MEMP_NUM_NETCONN               26
+#define MEMP_NUM_NETBUF                24
 
-#define MEMP_NUM_TCP_PCB               36
+#define MEMP_NUM_TCP_PCB               22
 #define MEMP_NUM_TCP_PCB_LISTEN        4
-#define MEMP_NUM_TCP_SEG               256
+#define MEMP_NUM_TCP_SEG               144
 
 #define MEMP_NUM_UDP_PCB               6
 #define MEMP_NUM_RAW_PCB               4
 #define MEMP_NUM_ARP_QUEUE             8
-#define MEMP_NUM_TCPIP_MSG_API         48
-#define MEMP_NUM_TCPIP_MSG_INPKT       48
+#define MEMP_NUM_TCPIP_MSG_API         32
+#define MEMP_NUM_TCPIP_MSG_INPKT       32
 #define MEMP_NUM_SYS_TIMEOUT           (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
 
 /* ========================================================= */
@@ -108,7 +109,7 @@
 
 #define LWIP_TCP_KEEPALIVE             1
 #define TCP_LISTEN_BACKLOG             1
-#define TCP_DEFAULT_LISTEN_BACKLOG     16
+#define TCP_DEFAULT_LISTEN_BACKLOG     8
 
 /* ========================================================= */
 /* UDP / DHCP / DNS                                          */
@@ -185,10 +186,10 @@
 #define TCPIP_THREAD_STACKSIZE         4096
 #define TCPIP_THREAD_PRIO              osPriorityHigh
 
-#define TCPIP_MBOX_SIZE                48
-#define DEFAULT_UDP_RECVMBOX_SIZE      12
-#define DEFAULT_TCP_RECVMBOX_SIZE      32
-#define DEFAULT_ACCEPTMBOX_SIZE        24
+#define TCPIP_MBOX_SIZE                32
+#define DEFAULT_UDP_RECVMBOX_SIZE      8
+#define DEFAULT_TCP_RECVMBOX_SIZE      16
+#define DEFAULT_ACCEPTMBOX_SIZE        12
 #define DEFAULT_THREAD_STACKSIZE       4096
 
 /* ========================================================= */
