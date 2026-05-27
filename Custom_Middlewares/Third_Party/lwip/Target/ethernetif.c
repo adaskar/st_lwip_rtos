@@ -681,6 +681,32 @@ void HAL_ETH_ErrorCallback(ETH_HandleTypeDef *heth)
   uint32_t dma_error = HAL_ETH_GetDMAError(heth);
 
   EthStats.dma_errors++;
+  EthStats.dma_last_error = dma_error;
+
+  if((dma_error & ETH_DMACSR_RBU) == ETH_DMACSR_RBU)
+  {
+    EthStats.dma_rbu_errors++;
+  }
+
+  if((dma_error & ETH_DMACSR_TBU) == ETH_DMACSR_TBU)
+  {
+    EthStats.dma_tbu_errors++;
+  }
+
+  if((dma_error & ETH_DMACSR_TPS) == ETH_DMACSR_TPS)
+  {
+    EthStats.dma_tps_errors++;
+  }
+
+  if((dma_error & ETH_DMACSR_RPS) == ETH_DMACSR_RPS)
+  {
+    EthStats.dma_rps_errors++;
+  }
+
+  if((dma_error & ETH_DMACSR_FBE) == ETH_DMACSR_FBE)
+  {
+    EthStats.dma_fbe_errors++;
+  }
 
   if((dma_error & ETH_DMACSR_RBU) == ETH_DMACSR_RBU)
   {

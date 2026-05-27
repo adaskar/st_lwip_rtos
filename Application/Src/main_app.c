@@ -690,6 +690,12 @@ static size_t make_state_json(char *buf, size_t len)
                      "\"txErrors\":%lu,"
                      "\"txBusyDrops\":%lu,"
                      "\"dmaErrors\":%lu,"
+                     "\"dmaLastError\":%lu,"
+                     "\"dmaRbuErrors\":%lu,"
+                     "\"dmaTbuErrors\":%lu,"
+                     "\"dmaTpsErrors\":%lu,"
+                     "\"dmaRpsErrors\":%lu,"
+                     "\"dmaFbeErrors\":%lu,"
                      "\"linkUpCount\":%lu,"
                      "\"linkDownCount\":%lu"
                      "},"
@@ -712,6 +718,12 @@ static size_t make_state_json(char *buf, size_t len)
                      (unsigned long)eth.tx_errors,
                      (unsigned long)eth.tx_busy_drops,
                      (unsigned long)eth.dma_errors,
+                     (unsigned long)eth.dma_last_error,
+                     (unsigned long)eth.dma_rbu_errors,
+                     (unsigned long)eth.dma_tbu_errors,
+                     (unsigned long)eth.dma_tps_errors,
+                     (unsigned long)eth.dma_rps_errors,
+                     (unsigned long)eth.dma_fbe_errors,
                      (unsigned long)eth.link_up_count,
                      (unsigned long)eth.link_down_count,
                      input_get() ? "true" : "false",
@@ -805,7 +817,7 @@ static void reply_device_info(struct mg_connection *c)
 
 static void reply_state(struct mg_connection *c)
 {
-    char json[768];
+    char json[1024];
     make_state_json(json, sizeof(json));
     mg_http_reply(c,
                   200,
@@ -833,7 +845,7 @@ static void reply_network(struct mg_connection *c)
 
 static void broadcast_state(struct mg_mgr *mgr)
 {
-    char json[768];
+    char json[1024];
     size_t len = make_state_json(json, sizeof(json));
     struct mg_connection *conn;
 
@@ -1158,7 +1170,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_WS_OPEN)
     {
-        char json[768];
+        char json[1024];
         size_t len = make_state_json(json, sizeof(json));
         mark_conn_activity(c);
 #if HTTPS_DRAIN_HTTP_ON_WS_OPEN
@@ -1181,7 +1193,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         }
         else if (mg_match(wm->data, mg_str("state"), NULL))
         {
-            char json[768];
+            char json[1024];
             size_t len = make_state_json(json, sizeof(json));
             mg_ws_send(c, json, len, WEBSOCKET_OP_TEXT);
         }

@@ -156,6 +156,11 @@
         ["eth-tx-errors", ethernet.txErrors],
         ["eth-tx-busy-drops", ethernet.txBusyDrops],
         ["eth-dma-errors", ethernet.dmaErrors],
+        ["eth-dma-rbu-errors", ethernet.dmaRbuErrors],
+        ["eth-dma-tbu-errors", ethernet.dmaTbuErrors],
+        ["eth-dma-tps-errors", ethernet.dmaTpsErrors],
+        ["eth-dma-rps-errors", ethernet.dmaRpsErrors],
+        ["eth-dma-fbe-errors", ethernet.dmaFbeErrors],
         ["eth-link-up-count", ethernet.linkUpCount],
         ["eth-link-down-count", ethernet.linkDownCount]
       ];
@@ -164,6 +169,12 @@
         const element = $(id);
         if (element) element.textContent = Number(value || 0).toLocaleString();
       });
+
+      const lastError = $("eth-dma-last-error");
+      if (lastError) {
+        const value = Number(ethernet.dmaLastError || 0) >>> 0;
+        lastError.textContent = "0x" + value.toString(16).toUpperCase().padStart(8, "0");
+      }
     }
 
     function renderState(data) {

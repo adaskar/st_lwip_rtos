@@ -36,6 +36,12 @@ typedef struct
   uint32_t tx_errors;
   uint32_t tx_busy_drops;
   uint32_t dma_errors;
+  uint32_t dma_last_error;
+  uint32_t dma_rbu_errors;
+  uint32_t dma_tbu_errors;
+  uint32_t dma_tps_errors;
+  uint32_t dma_rps_errors;
+  uint32_t dma_fbe_errors;
   uint32_t link_up_count;
   uint32_t link_down_count;
 } ethernetif_stats_t;
