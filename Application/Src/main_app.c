@@ -14,16 +14,27 @@
 
 extern UART_HandleTypeDef huart3;
 
+static osMutexId_t s_uart_mutex;
+static osEventFlagsId_t s_net_ready_evt;
+#define NET_READY_FLAG 0x01U
+
 int _write(int fd, unsigned char *buf, int len)
 {
     if (fd != 1 && fd != 2)
         return len;
+
+    if (s_uart_mutex != NULL)
+        osMutexAcquire(s_uart_mutex, osWaitForever);
 
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_SET);
 
     HAL_UART_Transmit(&huart3, buf, (uint16_t)len, 1000);
 
     HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
+
+    if (s_uart_mutex != NULL)
+        osMutexRelease(s_uart_mutex);
+
     return len;
 }
 
@@ -101,6 +112,7 @@ void ethernet_link_status_updated(struct netif *netif)
         ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
         ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
         printf("Static IPv4 address: %s\r\n", ip_str);
+        osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
     }
     else
     {
@@ -147,6 +159,7 @@ void DHCP_Thread_Entry(void *argument)
                 ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
                 ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
                 printf("IPv4 address assigned by DHCP: %s\n", ip_str);
+                osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
             }
             else
             {
@@ -161,6 +174,7 @@ void DHCP_Thread_Entry(void *argument)
                     ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
                     ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
                     printf("DHCP Timeout!! Static IPv4: %s\r\n", ip_str);
+                    osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
                 }
             }
             break;
@@ -241,6 +255,7 @@ static const output_t outputs[] = {
     { "Output 1", "PA15", m_OUT_1_GPIO_Port, m_OUT_1_Pin },
 };
 
+#define FW_VERSION "1.0.0"
 #define TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define HTTPS_NO_REQUEST_TIMEOUT_MS 500U
 #define HTTP_KEEPALIVE_TIMEOUT_MS 250U
@@ -264,6 +279,9 @@ typedef struct
     uint32_t request_count;
     bool authenticated;
 } conn_state_t;
+
+_Static_assert(sizeof(conn_state_t) <= MG_DATA_SIZE,
+               "conn_state_t exceeds mg_connection.data[]");
 
 static uint8_t output_get(size_t id)
 {
@@ -495,7 +513,8 @@ static void reply_unauthorized(struct mg_connection *c)
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
                   "Connection: close\r\n",
-                  "{\"error\":\"unauthorized\"}\n");
+                  "%s",
+                  "{\"error\":\"unauthorized\"}");
     c->is_draining = 1;
 }
 
@@ -515,7 +534,7 @@ static void redirect_to_path(struct mg_connection *c, const char *path)
                 "Location: %s\r\n"
                 "Cache-Control: no-store\r\n",
                 path);
-    mg_http_reply(c, 303, headers, "");
+    mg_http_reply(c, 303, headers, "%s", "");
 }
 
 static bool uri_contains_dotdot(struct mg_str uri)
@@ -550,7 +569,6 @@ static void serve_web_file(struct mg_connection *c,
                 no_store ?
                     "Cache-Control: no-store\r\n" :
                     "Cache-Control: max-age=86400\r\n");
-    mg_mem_files = mg_packed_files;
     mg_http_serve_file(c, hm, path, &opts);
     c->is_draining = 1;
 }
@@ -570,7 +588,8 @@ static void serve_web_asset(struct mg_connection *c, struct mg_http_message *hm)
                       400,
                       "Content-Type: text/plain; charset=utf-8\r\n"
                       "Cache-Control: no-store\r\n",
-                      "bad request\n");
+                      "%s",
+                      "bad request");
         return;
     }
 
@@ -593,7 +612,8 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
                       "Cache-Control: no-store\r\n"
                       "Connection: close\r\n"
                       "Set-Cookie: " AUTH_COOKIE "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n",
-                      "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}\n");
+                      "%s",
+                      "{\"ok\":true,\"token\":\"" AUTH_TOKEN "\"}");
         c->is_draining = 1;
     }
     else
@@ -603,7 +623,8 @@ static void handle_login(struct mg_connection *c, struct mg_http_message *hm)
                       "Content-Type: application/json\r\n"
                       "Cache-Control: no-store\r\n"
                       "Connection: close\r\n",
-                      "{\"error\":\"bad password\"}\n");
+                      "%s",
+                      "{\"error\":\"bad password\"}");
         c->is_draining = 1;
     }
 }
@@ -616,36 +637,42 @@ static void handle_logout(struct mg_connection *c)
                   "Cache-Control: no-store\r\n"
                   "Connection: close\r\n"
                   "Set-Cookie: st_auth=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0\r\n",
-                  "{\"ok\":true}\n");
+                  "%s",
+                  "{\"ok\":true}");
     c->is_draining = 1;
 }
 
 static size_t make_state_json(char *buf, size_t len)
 {
-    return (size_t)snprintf(buf,
-                            len,
-                            "{"
-                            "\"uptime\":%lu,"
-                            "\"heap\":{\"total\":%lu,\"free\":%lu,\"used\":%lu,\"minFree\":%lu,\"maxUsed\":%lu},"
-                            "\"input\":{\"name\":\"m_IN_3\",\"pin\":\"PA3\",\"active\":%s},"
-                            "\"outputs\":["
-                            "{\"id\":0,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s},"
-                            "{\"id\":1,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s}"
-                            "]"
-                            "}",
-                            (unsigned long)uptime_seconds(),
-                            (unsigned long)heap_total_bytes(),
-                            (unsigned long)heap_free_bytes(),
-                            (unsigned long)(heap_total_bytes() - heap_free_bytes()),
-                            (unsigned long)heap_min_free_bytes(),
-                            (unsigned long)(heap_total_bytes() - heap_min_free_bytes()),
-                            input_get() ? "true" : "false",
-                            outputs[0].name,
-                            outputs[0].pin_name,
-                            output_get(0) ? "true" : "false",
-                            outputs[1].name,
-                            outputs[1].pin_name,
-                            output_get(1) ? "true" : "false");
+    int n = snprintf(buf,
+                     len,
+                     "{"
+                     "\"uptime\":%lu,"
+                     "\"heap\":{\"total\":%lu,\"free\":%lu,\"used\":%lu,\"minFree\":%lu,\"maxUsed\":%lu},"
+                     "\"input\":{\"name\":\"m_IN_3\",\"pin\":\"PA3\",\"active\":%s},"
+                     "\"outputs\":["
+                     "{\"id\":0,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s},"
+                     "{\"id\":1,\"name\":\"%s\",\"pin\":\"%s\",\"on\":%s}"
+                     "]"
+                     "}",
+                     (unsigned long)uptime_seconds(),
+                     (unsigned long)heap_total_bytes(),
+                     (unsigned long)heap_free_bytes(),
+                     (unsigned long)(heap_total_bytes() - heap_free_bytes()),
+                     (unsigned long)heap_min_free_bytes(),
+                     (unsigned long)(heap_total_bytes() - heap_min_free_bytes()),
+                     input_get() ? "true" : "false",
+                     outputs[0].name,
+                     outputs[0].pin_name,
+                     output_get(0) ? "true" : "false",
+                     outputs[1].name,
+                     outputs[1].pin_name,
+                     output_get(1) ? "true" : "false");
+
+    if (n < 0 || (size_t)n >= len)
+        return (size_t)snprintf(buf, len, "{\"error\":\"state_overflow\"}");
+
+    return (size_t)n;
 }
 
 static size_t make_network_json(char *buf, size_t len)
@@ -660,23 +687,68 @@ static size_t make_network_json(char *buf, size_t len)
     ip4addr_ntoa_r(netif_ip4_netmask(&gnetif), cur_mask, sizeof(cur_mask));
     ip4addr_ntoa_r(netif_ip4_gw(&gnetif), cur_gw, sizeof(cur_gw));
 
-    return (size_t)snprintf(buf,
-                            len,
-                            "{"
-                            "\"dhcp\":%s,"
-                            "\"ip\":\"%s\","
-                            "\"netmask\":\"%s\","
-                            "\"gateway\":\"%s\","
-                            "\"current\":{\"ip\":\"%s\",\"netmask\":\"%s\",\"gateway\":\"%s\",\"link\":%s}"
-                            "}",
-                            s_net_cfg.dhcp ? "true" : "false",
-                            cfg_ip,
-                            cfg_mask,
-                            cfg_gw,
-                            cur_ip,
-                            cur_mask,
-                            cur_gw,
-                            netif_is_link_up(&gnetif) ? "true" : "false");
+    int n = snprintf(buf,
+                     len,
+                     "{"
+                     "\"dhcp\":%s,"
+                     "\"ip\":\"%s\","
+                     "\"netmask\":\"%s\","
+                     "\"gateway\":\"%s\","
+                     "\"current\":{\"ip\":\"%s\",\"netmask\":\"%s\",\"gateway\":\"%s\",\"link\":%s}"
+                     "}",
+                     s_net_cfg.dhcp ? "true" : "false",
+                     cfg_ip,
+                     cfg_mask,
+                     cfg_gw,
+                     cur_ip,
+                     cur_mask,
+                     cur_gw,
+                     netif_is_link_up(&gnetif) ? "true" : "false");
+
+    if (n < 0 || (size_t)n >= len)
+        return (size_t)snprintf(buf, len, "{\"error\":\"network_overflow\"}");
+
+    return (size_t)n;
+}
+
+static void reply_device_info(struct mg_connection *c)
+{
+    char json[256];
+    int n = snprintf(json,
+                     sizeof(json),
+                     "{"
+                     "\"device\":\"STM32H573\","
+                     "\"fw\":\"%s\","
+                     "\"mongoose\":\"%s\","
+                     "\"uid\":\"%08lX%08lX%08lX\""
+                     "}",
+                     FW_VERSION,
+                     MG_VERSION,
+                     (unsigned long)HAL_GetUIDw0(),
+                     (unsigned long)HAL_GetUIDw1(),
+                     (unsigned long)HAL_GetUIDw2());
+
+    if (n < 0 || (size_t)n >= sizeof(json))
+    {
+        mg_http_reply(c,
+                      500,
+                      "Content-Type: application/json\r\n"
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n",
+                      "%s",
+                      "{\"error\":\"overflow\"}");
+        c->is_draining = 1;
+        return;
+    }
+
+    mg_http_reply(c,
+                  200,
+                  "Content-Type: application/json\r\n"
+                  "Cache-Control: no-store\r\n"
+                  "Connection: close\r\n",
+                  "%s",
+                  json);
+    c->is_draining = 1;
 }
 
 static void reply_state(struct mg_connection *c)
@@ -687,7 +759,7 @@ static void reply_state(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n"
+                  "Connection: close\r\n",
                   "%s",
                   json);
     c->is_draining = 1;
@@ -701,7 +773,7 @@ static void reply_network(struct mg_connection *c)
                   200,
                   "Content-Type: application/json\r\n"
                   "Cache-Control: no-store\r\n"
-                  "Connection: close\r\n"
+                  "Connection: close\r\n",
                   "%s",
                   json);
     c->is_draining = 1;
@@ -744,7 +816,8 @@ static void handle_output_update(struct mg_connection *c,
                       "Content-Type: application/json\r\n"
                       "Cache-Control: no-store\r\n"
                       "Connection: close\r\n",
-                      "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}\n");
+                      "%s",
+                      "{\"error\":\"expected JSON body {\\\"id\\\":0|1,\\\"on\\\":true|false}\"}");
         c->is_draining = 1;
         return;
     }
@@ -868,7 +941,8 @@ static void redirect_to_https(struct mg_connection *c, struct mg_http_message *h
     mg_http_reply(c,
                   301,
                   location,
-                  "Redirecting to HTTPS\n");
+                  "%s",
+                  "Redirecting to HTTPS");
 }
 
 static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data)
@@ -923,6 +997,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             handle_login(c, hm);
         }
+        else if (mg_match(hm->uri, mg_str("/api/info"), NULL))
+        {
+            reply_device_info(c);
+        }
         else if (mg_match(hm->uri, mg_str("/login.html"), NULL))
         {
             if (authed)
@@ -941,6 +1019,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                           204,
                           "Cache-Control: max-age=86400\r\n"
                           "Connection: close\r\n",
+                          "%s",
                           "");
             c->is_draining = 1;
         }
@@ -987,7 +1066,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                                   "Content-Type: application/json\r\n"
                                   "Cache-Control: no-store\r\n"
                                   "Connection: close\r\n",
-                                  "{\"error\":\"invalid network config\"}\n");
+                                  "%s",
+                                  "{\"error\":\"invalid network config\"}");
                     c->is_draining = 1;
                     return;
                 }
@@ -1003,7 +1083,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                               "Content-Type: application/json\r\n"
                               "Cache-Control: no-store\r\n"
                               "Connection: close\r\n",
-                              "{\"error\":\"too many websocket clients\"}\n");
+                              "%s",
+                              "{\"error\":\"too many websocket clients\"}");
                 c->is_draining = 1;
                 return;
             }
@@ -1018,7 +1099,8 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                           "Content-Type: application/json\r\n"
                           "Cache-Control: no-store\r\n"
                           "Connection: close\r\n",
-                          "{\"error\":\"not found\"}\n");
+                          "%s",
+                          "{\"error\":\"not found\"}");
             c->is_draining = 1;
         }
     }
@@ -1125,14 +1207,17 @@ static void https_server_task(void *argument)
 
     (void)argument;
 
-    while (gnetif.ip_addr.addr == 0)
-        osDelay(100);
+    osEventFlagsWait(s_net_ready_evt,
+                     NET_READY_FLAG,
+                     osFlagsWaitAny | osFlagsNoClear,
+                     osWaitForever);
 
     printf("Network ready\r\n");
 
     mg_log_set_fn(mongoose_log_filter, NULL);
     mg_log_set(MG_LL_INFO);
     mg_mgr_init(&mgr);
+    mg_mem_files = mg_packed_files;
 
     if (mg_http_listen(&mgr, "http://0.0.0.0:80", http_ev_handler, NULL) == NULL)
     {
@@ -1152,11 +1237,17 @@ static void https_server_task(void *argument)
 
     for (;;)
     {
+        bool heartbeat;
+
         mg_mgr_poll(&mgr, 10);
 
-        if (HAL_GetTick() - last_broadcast >= 1000U)
-        {
+        heartbeat = HAL_GetTick() - last_broadcast >= 1000U;
+
+        if (heartbeat)
             last_broadcast = HAL_GetTick();
+
+        if (heartbeat && count_ws_clients(&mgr, NULL) > 0)
+        {
             broadcast_state(&mgr);
         }
     }
@@ -1167,6 +1258,12 @@ static void https_server_task(void *argument)
 void main_app(void *arg)
 {
     (void)arg;
+
+    s_uart_mutex = osMutexNew(NULL);
+    configASSERT(s_uart_mutex != NULL);
+
+    s_net_ready_evt = osEventFlagsNew(NULL);
+    configASSERT(s_net_ready_evt != NULL);
 
     InitLwip();
 
