@@ -24,7 +24,7 @@
 /* ========================================================= */
 
 #define MEM_ALIGNMENT                  4
-#define MEM_SIZE                       (64 * 1024)
+#define MEM_SIZE                       (48 * 1024)
 
 /*
  * Do not define LWIP_RAM_HEAP_POINTER. Let lwIP allocate its MEM_SIZE heap as
@@ -44,7 +44,7 @@
  * Keep PBUF_POOL_BUFSIZE at full Ethernet frame size so internally allocated
  * pbufs do not fragment normal TCP/MSS-sized traffic.
  */
-#define PBUF_POOL_SIZE                 64
+#define PBUF_POOL_SIZE                 32
 #define PBUF_POOL_BUFSIZE              1536
 #define LWIP_SUPPORT_CUSTOM_PBUF       1
 
