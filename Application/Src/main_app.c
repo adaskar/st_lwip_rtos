@@ -263,6 +263,7 @@ static const output_t outputs[] = {
 #define HTTPS_MAX_PRE_REQUEST_CONNS 3U
 #define HTTPS_PRE_REQUEST_LOW_HEAP_BYTES (96U * 1024U)
 #define HTTPS_DRAIN_HTTP_ON_WS_OPEN 1
+#define HTTPS_TRACE_CONNECTIONS    0
 #define WS_MAX_CLIENTS            4U
 #define WS_PING_INTERVAL_MS      15000U
 #define WS_IDLE_TIMEOUT_MS       60000U
@@ -693,9 +694,12 @@ static size_t make_state_json(char *buf, size_t len)
                      "\"rxPackets\":%lu,"
                      "\"rxDropped\":%lu,"
                      "\"rxAllocErrors\":%lu,"
+                     "\"rxAllocStatus\":%lu,"
                      "\"txPackets\":%lu,"
                      "\"txErrors\":%lu,"
                      "\"txBusyDrops\":%lu,"
+                     "\"txDriverBuffersInUse\":%lu,"
+                     "\"txHalBuffersInUse\":%lu,"
                      "\"dmaErrors\":%lu,"
                      "\"dmaLastError\":%lu,"
                      "\"dmaRbuErrors\":%lu,"
@@ -721,9 +725,12 @@ static size_t make_state_json(char *buf, size_t len)
                      (unsigned long)eth.rx_packets,
                      (unsigned long)eth.rx_dropped,
                      (unsigned long)eth.rx_alloc_errors,
+                     (unsigned long)eth.rx_alloc_status,
                      (unsigned long)eth.tx_packets,
                      (unsigned long)eth.tx_errors,
                      (unsigned long)eth.tx_busy_drops,
+                     (unsigned long)eth.tx_driver_buffers_in_use,
+                     (unsigned long)eth.tx_hal_buffers_in_use,
                      (unsigned long)eth.dma_errors,
                      (unsigned long)eth.dma_last_error,
                      (unsigned long)eth.dma_rbu_errors,
@@ -946,7 +953,9 @@ static void start_tls(struct mg_connection *c)
     memset(&opts, 0, sizeof(opts));
     opts.cert = mg_str((const char *)cert_pem);
     opts.key = mg_str((const char *)key_pem);
+#if HTTPS_TRACE_CONNECTIONS
     printf("HTTPS client connected conn=%lu\r\n", c->id);
+#endif
     mg_tls_init(c, &opts);
 }
 
@@ -1112,6 +1121,7 @@ static void handle_https_http_msg(struct mg_connection *c,
     state->request_count++;
     mark_conn_activity(c);
 
+#if HTTPS_TRACE_CONNECTIONS
     printf("HTTPS request conn=%lu: %.*s %.*s (%lu bytes) sendq=%lu recvq=%lu\r\n",
            c->id,
            (int)hm->method.len,
@@ -1121,6 +1131,7 @@ static void handle_https_http_msg(struct mg_connection *c,
            (unsigned long)hm->message.len,
            (unsigned long)c->send.len,
            (unsigned long)c->recv.len);
+#endif
 
     if (handle_public_request(c, hm, authed))
         return;
@@ -1145,12 +1156,14 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_TLS_HS)
     {
+#if HTTPS_TRACE_CONNECTIONS
         conn_state_t *state = conn_state(c);
         struct mg_tls *tls = (struct mg_tls *)c->tls;
         printf("TLS handshake OK conn=%lu time=%lu ms cipher: %s\r\n",
                c->id,
                (unsigned long)elapsed_since(state->handshake_started_at),
                mbedtls_ssl_get_ciphersuite(&tls->ssl));
+#endif
         mark_conn_activity(c);
     }
     else if (ev == MG_EV_HTTP_MSG)
@@ -1203,6 +1216,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_CLOSE && c->is_accepted)
     {
+#if HTTPS_TRACE_CONNECTIONS
         conn_state_t *state = conn_state(c);
 
         printf("HTTPS client disconnected conn=%lu websocket=%u draining=%u closing=%u sendq=%lu recvq=%lu age=%lu ms\r\n",
@@ -1213,6 +1227,7 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
                (unsigned long)c->send.len,
                (unsigned long)c->recv.len,
                (unsigned long)elapsed_since(state->handshake_started_at));
+#endif
     }
     else if (ev == MG_EV_POLL && c->is_accepted)
     {

@@ -940,6 +940,8 @@ void HAL_ETH_TxFreeCallback(uint32_t * buff)
 
 void ethernetif_get_stats(ethernetif_stats_t *out)
 {
+  uint32_t tx_in_use = 0U;
+
   if(out == NULL)
   {
     return;
@@ -947,6 +949,16 @@ void ethernetif_get_stats(ethernetif_stats_t *out)
 
   taskENTER_CRITICAL();
   *out = EthStats;
+  for(uint32_t i = 0U; i < ETH_TX_BUFFER_CNT; i++)
+  {
+    if(TxBuffers[i].in_use != 0U)
+    {
+      tx_in_use++;
+    }
+  }
+  out->rx_alloc_status = (uint32_t)RxAllocStatus;
+  out->tx_driver_buffers_in_use = tx_in_use;
+  out->tx_hal_buffers_in_use = EthHandle.TxDescList.BuffersInUse;
   taskEXIT_CRITICAL();
 }
 

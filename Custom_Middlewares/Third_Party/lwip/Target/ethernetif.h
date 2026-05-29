@@ -32,9 +32,12 @@ typedef struct
   uint32_t rx_packets;
   uint32_t rx_dropped;
   uint32_t rx_alloc_errors;
+  uint32_t rx_alloc_status;
   uint32_t tx_packets;
   uint32_t tx_errors;
   uint32_t tx_busy_drops;
+  uint32_t tx_driver_buffers_in_use;
+  uint32_t tx_hal_buffers_in_use;
   uint32_t dma_errors;
   uint32_t dma_last_error;
   uint32_t dma_rbu_errors;
