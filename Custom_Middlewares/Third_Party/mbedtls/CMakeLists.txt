@@ -15,6 +15,7 @@ set(MBEDTLS_SOURCES
     # User Port / ALT
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/aes_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/mbedtls_freertos_heap.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Target/platform_time_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/low_level_rng.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/rsa_alt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Target/sha256_alt.c

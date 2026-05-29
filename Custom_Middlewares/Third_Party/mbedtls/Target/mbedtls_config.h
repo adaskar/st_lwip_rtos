@@ -1567,7 +1567,7 @@
  *
  * Comment this macro to disable support for SSL session tickets
  */
-//#define MBEDTLS_SSL_SESSION_TICKETS
+#define MBEDTLS_SSL_SESSION_TICKETS
 
 /**
  * \def MBEDTLS_SSL_EXPORT_KEYS
@@ -2769,7 +2769,7 @@
  *
  * Requires: MBEDTLS_CIPHER_C
  */
-//#define MBEDTLS_SSL_TICKET_C
+#define MBEDTLS_SSL_TICKET_C
 
 /**
  * \def MBEDTLS_SSL_CLI_C
