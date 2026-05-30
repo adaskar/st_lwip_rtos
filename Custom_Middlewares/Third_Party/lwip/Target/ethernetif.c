@@ -189,34 +189,14 @@ static void tx_release_completed(void)
   HAL_ETH_ReleaseTxPacket(&EthHandle);
 }
 
-static void tx_reset_all(void)
+static void tx_buffers_release_all(void)
 {
-  ETH_TxDescListTypeDef *tx_desc_list = &EthHandle.TxDescList;
-
   taskENTER_CRITICAL();
   for(uint32_t i = 0U; i < ETH_TX_BUFFER_CNT; i++)
   {
     TxBuffers[i].in_use = 0U;
   }
-
-  for(uint32_t i = 0U; i < ETH_TX_DESC_CNT; i++)
-  {
-    ETH_DMADescTypeDef *tx_desc = &EthHandle.Init.TxDesc[i];
-
-    tx_desc->DESC0 = 0U;
-    tx_desc->DESC1 = 0U;
-    tx_desc->DESC2 = 0U;
-    tx_desc->DESC3 = 0U;
-    tx_desc_list->PacketAddress[i] = NULL;
-  }
-
-  tx_desc_list->CurTxDesc = 0U;
-  tx_desc_list->releaseIndex = 0U;
-  tx_desc_list->BuffersInUse = 0U;
-  tx_desc_list->CurrentPacketAddress = NULL;
   taskEXIT_CRITICAL();
-
-  WRITE_REG(EthHandle.Instance->DMACTDTPR, (uint32_t)EthHandle.Init.TxDesc);
 }
 
 static RxAllocStatusTypeDef rx_alloc_status_get(void)
@@ -820,7 +800,7 @@ void ethernet_link_thread( void *argument )
     {
       HAL_ETH_Stop_IT(&EthHandle);
       tx_release_completed();
-      tx_reset_all();
+      tx_buffers_release_all();
       netifapi_netif_set_down(netif);
       netifapi_netif_set_link_down(netif);
       EthStats.link_down_count++;
