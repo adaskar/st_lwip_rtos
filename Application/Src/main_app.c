@@ -17,7 +17,8 @@ extern UART_HandleTypeDef huart3;
 static osMutexId_t s_uart_mutex;
 static osEventFlagsId_t s_net_ready_evt;
 #define NET_READY_FLAG 0x01U
-#define NET_LINK_DOWN_FLAG 0x02U
+
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 int _write(int fd, unsigned char *buf, int len)
 {
@@ -75,6 +76,16 @@ typedef struct
 
 static network_config_t s_net_cfg;
 
+static void network_signal_ready(void)
+{
+    osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
+}
+
+static void network_signal_down(void)
+{
+    osEventFlagsClear(s_net_ready_evt, NET_READY_FLAG);
+}
+
 static void net_config_init_defaults(void)
 {
     s_net_cfg.dhcp = false;
@@ -113,13 +124,11 @@ void ethernet_link_status_updated(struct netif *netif)
         ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
         ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
         printf("Static IPv4 address: %s\r\n", ip_str);
-        osEventFlagsClear(s_net_ready_evt, NET_LINK_DOWN_FLAG);
-        osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
+        network_signal_ready();
     }
     else
     {
-        osEventFlagsClear(s_net_ready_evt, NET_READY_FLAG);
-        osEventFlagsSet(s_net_ready_evt, NET_LINK_DOWN_FLAG);
+        network_signal_down();
 #if LWIP_DHCP
         if (s_net_cfg.dhcp)
         {
@@ -163,8 +172,7 @@ void DHCP_Thread_Entry(void *argument)
                 ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
                 ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
                 printf("IPv4 address assigned by DHCP: %s\n", ip_str);
-                osEventFlagsClear(s_net_ready_evt, NET_LINK_DOWN_FLAG);
-                osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
+                network_signal_ready();
             }
             else
             {
@@ -179,8 +187,7 @@ void DHCP_Thread_Entry(void *argument)
                     ip4_addr_set_u32(&ipaddr, netif_ip4_addr(netif)->addr);
                     ip4addr_ntoa_r(&ipaddr, ip_str, sizeof(ip_str));
                     printf("DHCP Timeout!! Static IPv4: %s\r\n", ip_str);
-                    osEventFlagsClear(s_net_ready_evt, NET_LINK_DOWN_FLAG);
-                    osEventFlagsSet(s_net_ready_evt, NET_READY_FLAG);
+                    network_signal_ready();
                 }
             }
             break;
@@ -188,8 +195,7 @@ void DHCP_Thread_Entry(void *argument)
         case DHCP_LINK_DOWN:
         {
             netifapi_dhcp_stop(netif);
-            osEventFlagsClear(s_net_ready_evt, NET_READY_FLAG);
-            osEventFlagsSet(s_net_ready_evt, NET_LINK_DOWN_FLAG);
+            network_signal_down();
             DHCP_state = DHCP_OFF;
             printf("The network cable is not connected\r\n");
             break;
@@ -301,6 +307,14 @@ typedef struct
     uint32_t request_count;
     bool authenticated;
 } conn_state_t;
+
+typedef struct
+{
+    struct mg_mgr mgr;
+    uint32_t last_broadcast_at;
+    bool running;
+    bool network_ready;
+} https_service_t;
 
 _Static_assert(sizeof(conn_state_t) <= MG_DATA_SIZE,
                "conn_state_t exceeds mg_connection.data[]");
@@ -505,6 +519,7 @@ static bool network_is_ready(void)
 
 static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data);
 static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data);
+static void broadcast_state(struct mg_mgr *mgr);
 
 static void close_runtime_connections(struct mg_mgr *mgr)
 {
@@ -517,34 +532,97 @@ static void close_runtime_connections(struct mg_mgr *mgr)
     }
 }
 
-static bool mongoose_start(struct mg_mgr *mgr)
+static void https_service_init(https_service_t *service)
 {
-    mg_mgr_init(mgr);
+    memset(service, 0, sizeof(*service));
+}
+
+static bool https_service_start(https_service_t *service)
+{
+    if (service->running)
+        return true;
+
+    mg_mgr_init(&service->mgr);
     mg_mem_files = mg_packed_files;
 
-    if (mg_http_listen(mgr, "http://0.0.0.0:80", http_ev_handler, NULL) == NULL)
+    if (mg_http_listen(&service->mgr, "http://0.0.0.0:80", http_ev_handler, NULL) == NULL)
     {
         printf("Mongoose HTTP listen failed\r\n");
-        mg_mgr_free(mgr);
+        mg_mgr_free(&service->mgr);
+        memset(&service->mgr, 0, sizeof(service->mgr));
         return false;
     }
 
-    if (mg_http_listen(mgr, "https://0.0.0.0:443", https_ev_handler, NULL) == NULL)
+    if (mg_http_listen(&service->mgr, "https://0.0.0.0:443", https_ev_handler, NULL) == NULL)
     {
         printf("Mongoose HTTPS listen failed\r\n");
-        mg_mgr_free(mgr);
+        mg_mgr_free(&service->mgr);
+        memset(&service->mgr, 0, sizeof(service->mgr));
         return false;
     }
 
+    service->last_broadcast_at = HAL_GetTick();
+    service->running = true;
     printf("Mongoose v%s HTTPS server listening on port 443\r\n", MG_VERSION);
     return true;
 }
 
-static void mongoose_stop(struct mg_mgr *mgr)
+static void https_service_stop(https_service_t *service)
 {
-    close_runtime_connections(mgr);
-    mg_mgr_poll(mgr, 0);
-    mg_mgr_free(mgr);
+    if (!service->running)
+        return;
+
+    close_runtime_connections(&service->mgr);
+    mg_mgr_poll(&service->mgr, 0);
+    mg_mgr_free(&service->mgr);
+    memset(&service->mgr, 0, sizeof(service->mgr));
+    service->running = false;
+}
+
+static void https_service_set_network_ready(https_service_t *service, bool ready)
+{
+    if (ready == service->network_ready)
+        return;
+
+    service->network_ready = ready;
+
+    if (ready)
+    {
+        printf("Network link ready, starting HTTPS service\r\n");
+        (void)https_service_start(service);
+    }
+    else
+    {
+        printf("Network link down, stopping HTTPS service\r\n");
+        https_service_stop(service);
+    }
+}
+
+static void https_service_poll(https_service_t *service)
+{
+    bool heartbeat;
+
+    if (!service->network_ready)
+    {
+        osDelay(10);
+        return;
+    }
+
+    if (!service->running && !https_service_start(service))
+    {
+        osDelay(1000);
+        return;
+    }
+
+    mg_mgr_poll(&service->mgr, 10);
+
+    heartbeat = HAL_GetTick() - service->last_broadcast_at >= 1000U;
+    if (!heartbeat)
+        return;
+
+    service->last_broadcast_at = HAL_GetTick();
+    if (count_ws_clients(&service->mgr, NULL) > 0)
+        broadcast_state(&service->mgr);
 }
 
 static void mongoose_log_filter(char ch, void *param)
@@ -917,7 +995,7 @@ static void handle_output_update(struct mg_connection *c,
     long id = mg_json_get_long(hm->body, "$.id", -1);
     bool on = false;
 
-    if (id < 0 || id >= (long)(sizeof(outputs) / sizeof(outputs[0])) ||
+    if (id < 0 || id >= (long)ARRAY_LEN(outputs) ||
         !mg_json_get_bool(hm->body, "$.on", &on))
     {
         reply_json_close(c,
@@ -936,7 +1014,7 @@ static bool handle_output_json(struct mg_mgr *mgr, struct mg_str body)
     long id = mg_json_get_long(body, "$.id", -1);
     bool on = false;
 
-    if (id < 0 || id >= (long)(sizeof(outputs) / sizeof(outputs[0])) ||
+    if (id < 0 || id >= (long)ARRAY_LEN(outputs) ||
         !mg_json_get_bool(body, "$.on", &on))
     {
         return false;
@@ -1330,13 +1408,10 @@ static void https_ev_handler(struct mg_connection *c, int ev, void *ev_data)
 
 static void https_server_task(void *argument)
 {
-    struct mg_mgr mgr;
-    uint32_t last_broadcast = 0;
-    bool network_was_ready = false;
-    bool mongoose_running = false;
+    https_service_t service;
 
     (void)argument;
-    memset(&mgr, 0, sizeof(mgr));
+    https_service_init(&service);
 
     osEventFlagsWait(s_net_ready_evt,
                      NET_READY_FLAG,
@@ -1348,66 +1423,16 @@ static void https_server_task(void *argument)
     mg_log_set_fn(mongoose_log_filter, NULL);
     mg_log_set(MG_LL_INFO);
 
-    network_was_ready = network_is_ready();
-    if (network_was_ready)
-    {
-        mongoose_running = mongoose_start(&mgr);
-    }
+    service.network_ready = network_is_ready();
+    if (service.network_ready)
+        (void)https_service_start(&service);
 
     for (;;)
     {
-        bool heartbeat;
         bool ready = network_is_ready();
 
-        if (mongoose_running)
-            mg_mgr_poll(&mgr, 10);
-        else
-            osDelay(10);
-
-        if (!ready)
-        {
-            if (network_was_ready)
-            {
-                printf("Network link down, stopping HTTPS service\r\n");
-                if (mongoose_running)
-                {
-                    mongoose_stop(&mgr);
-                    memset(&mgr, 0, sizeof(mgr));
-                    mongoose_running = false;
-                }
-            }
-            network_was_ready = false;
-            continue;
-        }
-
-        if (!network_was_ready)
-        {
-            printf("Network link ready, starting HTTPS service\r\n");
-            mongoose_running = mongoose_start(&mgr);
-            network_was_ready = true;
-            last_broadcast = HAL_GetTick();
-            continue;
-        }
-
-        if (!mongoose_running)
-        {
-            mongoose_running = mongoose_start(&mgr);
-            if (!mongoose_running)
-            {
-                osDelay(1000);
-                continue;
-            }
-        }
-
-        heartbeat = HAL_GetTick() - last_broadcast >= 1000U;
-
-        if (heartbeat)
-            last_broadcast = HAL_GetTick();
-
-        if (heartbeat && count_ws_clients(&mgr, NULL) > 0)
-        {
-            broadcast_state(&mgr);
-        }
+        https_service_set_network_ready(&service, ready);
+        https_service_poll(&service);
     }
 }
 /* ---------------------------------------------------------------------------
